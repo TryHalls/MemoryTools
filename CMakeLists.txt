@@ -14,6 +14,7 @@ add_executable(memorytool
   src/process.cpp
   src/memory.cpp
   src/scanner.cpp
+  src/pattern.cpp
 )
 target_include_directories(memorytool PRIVATE src)
 target_compile_options(memorytool PRIVATE -Wall -Wextra)

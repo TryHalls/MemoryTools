@@ -128,6 +128,25 @@ sleep 0.3
 tail -n 8 "$OUT"
 
 echo
+echo "== PATTERN SCAN: bytes exactos de la cadena 'hola memorytool'"
+MSJ=$(grep -m1 'mensaje' "$LOG" | grep -o '0x[0-9a-f]*' | sed -E 's/^0x0*//' || true)
+[ -n "$MSJ" ] || fail "no se pudo leer la direccion de 'mensaje' del log"
+feed 'pattern 68 6f 6c 61 20 6d 65 6d 6f 72 79 74 6f 6f 6c'
+wait_out 'Pattern Scan' || fail "no llego el resultado del Pattern Scan"
+sleep 0.5
+tail -n 30 "$OUT" | grep -m1 'Pattern Scan'
+tail -n 30 "$OUT" | grep -q "$MSJ" || fail "el Pattern Scan exacto no encuentra 'mensaje' (esperada $MSJ)"
+
+echo
+echo "== PATTERN SCAN con wildcards: 20 4e ?? ?? (primeros bytes de 'dinero' = 20000 LE)"
+feed 'pattern 20 4e ?? ??'
+wait_out 'con wildcards' || fail "no llego el resultado del Pattern Scan con wildcards"
+sleep 0.5
+BLOCK=$(sed -n '/con wildcards/,$p' "$OUT")
+echo "$BLOCK" | grep -m1 'Pattern Scan'
+echo "$BLOCK" | grep -q "$NEXP" || fail "el Pattern Scan con wildcards no encuentra 'dinero' (esperada $NEXP)"
+
+echo
 echo "== escritura: set $EXPECTED 99999 int32"
 feed "set $EXPECTED 99999 i32"
 wait_out 'Nuevo' || fail "no se pudo escribir el nuevo valor"

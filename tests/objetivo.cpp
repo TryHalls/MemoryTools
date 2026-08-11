@@ -69,6 +69,7 @@ int main() {
     printf("  nivel      (u16)   : %p\n", (void*)&nivel);
     printf("  velocidad  (float) : %p\n", (void*)&velocidad);
     printf("  puntuacion (int64) : %p\n", (void*)&puntuacion);
+    printf("  mensaje    (char[64]): %p\n", (void*)&mensaje);
     printf("Comandos: <numero> dinero | + o - incrementar/decrementar | r reset | n nivel++ | v <float> velocidad | q salir\n");
 
     bool stdin_open = true;

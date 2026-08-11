@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "memory.h"
+#include "pattern.h"
 #include "process.h"
 #include "scanner.h"
 #include "types.h"
@@ -109,6 +110,8 @@ static void print_help() {
         << "  next >|<|>=|<=|!= <valor> [tipo]     Refinar por comparacion\n"
         << "  count                                Numero de coincidencias\n"
         << "  results [n]                          Mostrar las primeras n coincidencias\n"
+        << "  pattern <bytes>                      Buscar secuencia de bytes (AOB)\n"
+        << "                                       Ej: 48 8B 05 ?? ?? ?? ?? 48 85 C0\n"
         << "  view <direccion> [len]               Visor hexadecimal\n"
         << "  set <direccion> <valor> [tipo]       Escribir valor en memoria\n"
         << "  info <direccion>                     Informacion de la region\n"
@@ -374,6 +377,41 @@ static void run_repl(std::optional<int> initial_pid) {
             if (n < res.size())
                 printf("... y %zu mas. Usa 'results %zu' para verlas todas.\n",
                        res.size() - n, res.size());
+            continue;
+        }
+
+        if (cmd == "pattern" || cmd == "aob") {
+            if (!pid) { printf("Primero selecciona un proceso (attach <pid>).\n"); continue; }
+            if (t.size() < 2) { printf("Uso: pattern <bytes>  (Ej: 48 8B 05 ?? ?? ?? ?? 48 85 C0)\n"); continue; }
+
+            std::string pat_text;
+            for (size_t i = 1; i < t.size(); ++i) {
+                if (i > 1) pat_text += ' ';
+                pat_text += t[i];
+            }
+            BytePattern pat;
+            if (!parse_pattern(pat_text, pat)) {
+                printf("Patron invalido: %s\n", pat.error.c_str());
+                continue;
+            }
+
+            std::string err;
+            bool ok = with_memory(*pid, [&](Memory& mem) {
+                auto regions = parse_maps(*pid);
+                auto res = scan_pattern(mem, regions, pat);
+                printf("Pattern Scan (%zu bytes%s): %zu coincidencias\n",
+                       pat.size(), pat.has_wildcards() ? ", con wildcards" : "",
+                       res.hits.size());
+                const size_t n = std::min<size_t>(res.hits.size(), 20);
+                for (size_t i = 0; i < n; ++i)
+                    printf("[%4zu] 0x%016llx\n", i,
+                           (unsigned long long)res.hits[i]);
+                if (n < res.hits.size())
+                    printf("... y %zu mas.\n", res.hits.size() - n);
+                if (res.truncated)
+                    printf("AVISO: resultado truncado (limite de coincidencias).\n");
+            }, err);
+            if (!ok) printf("Error: %s\n", err.c_str());
             continue;
         }
 

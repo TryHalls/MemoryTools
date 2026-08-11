@@ -32,7 +32,8 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Escaneo `unknown` (sin conocer el valor) | ✅ |
 | Visor hexadecimal (`view`) | ✅ (ETAPA 13, versión mínima) |
 | Escritura de memoria autorizada (`set`) | ✅ (ETAPA 17, versión mínima) |
-| Pattern/AOB scanner, punteros, tabla de direcciones, GUI | ⏳ siguientes etapas |
+| Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
+| Punteros, tabla de direcciones, GUI | ⏳ siguientes etapas |
 
 ## Requisitos
 
@@ -138,6 +139,8 @@ next <valor> [tipo]                  Refinar resultados (igual)
 next changed|unchanged|increased|decreased
 next >|<|>=|<=|!= <valor> [tipo]     Refinar por comparación
 count                                Número de coincidencias
+pattern <bytes>                      Buscar secuencia de bytes (AOB)
+                                     Ej: 48 8B 05 ?? ?? ?? ?? 48 85 C0
 results [n]                          Mostrar las primeras n coincidencias
 view <direccion> [len]               Visor hexadecimal
 set <direccion> <valor> [tipo]       Escribir valor en memoria
@@ -193,7 +196,7 @@ MemoryTool/
 │   ├── process.h/.cpp  # Process Manager (listado desde /proc)
 │   ├── memory.h/.cpp   # Regiones /maps + acceso /mem con ptrace
 │   ├── scanner.h/.cpp  # Motor First/Next Scan con filtros
-│   ├── pattern.h/.cpp  # (siguiente etapa) Pattern/AOB scanner
+│   ├── pattern.h/.cpp  # Pattern/AOB scanner (wildcards ??)
 │   └── pointer.h/.cpp  # (siguiente etapa) Punteros y offsets
 ├── tests/
 │   ├── objetivo.cpp    # Programa de prueba (variable conocida)
@@ -250,7 +253,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 11 | Changed/Unchanged/Increased/Decreased | ✅ |
 | 12 | Strings y bytes | ⏳ (requiere ampliar `types`) |
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
-| 14 | Pattern/AOB Scanner | ⏳ |
+| 14 | Pattern/AOB Scanner | ✅ |
 | 15 | Pointer Scanner | ⏳ |
 | 16 | Address Table | ⏳ |
 | 17 | Modificar/restaurar memoria | ◐ (versión mínima: `set`) |
