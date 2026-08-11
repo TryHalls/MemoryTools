@@ -8,6 +8,8 @@
 
 #include <algorithm>
 
+#include "chunk.h"
+
 namespace mt {
 
 bool parse_pattern(const std::string& text, BytePattern& out) {
@@ -68,46 +70,30 @@ PatternScanResult scan_pattern(Memory& mem, const std::vector<Region>& regions,
     PatternScanResult res;
     if (!pat.valid || pat.size() == 0) return res;
 
-    constexpr size_t kChunk = 4u * 1024u * 1024u;
     constexpr size_t kMaxHits = 5u * 1000u * 1000u;
     const size_t w = pat.size();
 
-    std::vector<uint8_t> buf(kChunk);
-    for (const Region& r : regions) {
-        if (!r.readable()) continue;
-        uint64_t pos = r.start;
-        while (pos < r.end && !res.truncated) {
-            const size_t want =
-                (size_t)std::min<uint64_t>(kChunk, r.end - pos);
-            ssize_t got = mem.read(pos, buf.data(), want);
-            if (got <= 0) {
-                pos += want;
-                continue;
-            }
-            const size_t n = (size_t)got;
-            if (n >= w) {
-                for (size_t i = 0; i + w <= n; ++i) {
-                    bool ok = true;
-                    for (size_t j = 0; j < w; ++j) {
-                        if (pat.mask[j] && buf[i + j] != pat.bytes[j]) {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if (ok) {
-                        res.hits.push_back(pos + i);
-                        if (res.hits.size() >= kMaxHits) {
-                            res.truncated = true;
-                            break;
-                        }
-                    }
-                }
-                pos += n - (w - 1); // solapamiento: no perder limites
-            } else {
-                pos += n;
+    // Recorrido por bloques con solapamiento: ver chunk.h. El callback
+    // devuelve false para detener el recorrido al alcanzar el limite de
+    // resultados. El orden de las direcciones visitadas es identico al de
+    // la implementacion anterior.
+    for_each_window(mem, regions, w, [&](const uint8_t* win, uint64_t addr) {
+        bool ok = true;
+        for (size_t j = 0; j < w; ++j) {
+            if (pat.mask[j] && win[j] != pat.bytes[j]) {
+                ok = false;
+                break;
             }
         }
-    }
+        if (ok) {
+            res.hits.push_back(addr);
+            if (res.hits.size() >= kMaxHits) {
+                res.truncated = true;
+                return false; // detener todo el recorrido
+            }
+        }
+        return true;
+    });
     return res;
 }
 

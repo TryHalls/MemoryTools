@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 
+#include "chunk.h"
 #include "memory.h"
 #include "types.h"
 
@@ -63,7 +64,7 @@ private:
     // advierte del consumo elevado.
     static constexpr size_t kMaxCandidates = 20u * 1000u * 1000u;
     static constexpr size_t kWarnCandidates = 10u * 1000u * 1000u;
-    static constexpr size_t kChunk = 4u * 1024u * 1024u;
+    static constexpr size_t kChunk = kChunkBytes; // tamano de bloque compartido
 };
 
 } // namespace mt

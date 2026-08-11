@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "chunk.h"
+
 namespace mt {
 
 void Scanner::clear() {
@@ -26,7 +28,6 @@ void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
     clear();
     type_ = type;
     const size_t w = type_size(type);
-    std::vector<uint8_t> buf(kChunk);
 
     auto emit = [&](uint64_t addr, Value v) {
         if (candidates_.size() >= kMaxCandidates) {
@@ -39,38 +40,15 @@ void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
         return true;
     };
 
-    for (const Region& r : regions) {
-        if (!r.readable()) continue;
-        uint64_t pos = r.start;
-        while (pos < r.end && !truncated_) {
-            const size_t want =
-                (size_t)std::min<uint64_t>(kChunk, r.end - pos);
-            ssize_t got = mem.read(pos, buf.data(), want);
-            if (got <= 0) { // bloque ilegible: lo saltamos
-                pos += want;
-                continue;
-            }
-            const size_t n = (size_t)got;
-            if (n >= w) {
-                for (size_t i = 0; i + w <= n && !truncated_; ++i) {
-                    Value v = value_from_bytes(buf.data() + i, w);
-                    if (target) {
-                        if (value_equal(v, *target, type)) {
-                            if (!emit(pos + i, v)) break;
-                        }
-                    } else {
-                        if (!emit(pos + i, v)) break;
-                    }
-                }
-                // Solapamos w-1 bytes para no perder coincidencias que
-                // cruzarian el limite del bloque.
-                pos += n - (w - 1);
-            } else {
-                pos += n;
-            }
-        }
-        if (truncated_) break;
-    }
+    // Recorrido por bloques con solapamiento: ver chunk.h. El callback
+    // devuelve false para detener (p. ej. al truncarse por el limite de
+    // candidatos). El orden de las direcciones visitadas es identico al de
+    // la implementacion anterior.
+    for_each_window(mem, regions, w, [&](const uint8_t* win, uint64_t addr) {
+        Value v = value_from_bytes(win, w);
+        if (target && !value_equal(v, *target, type)) return true;
+        return emit(addr, v);
+    });
 }
 
 void Scanner::next_scan(Memory& mem, DataType type, Filter filter,

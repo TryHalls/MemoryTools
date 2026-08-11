@@ -214,6 +214,26 @@ echo "OK: el limite es exactamente 20M"
 kill "$OBJ2_PID" 2>/dev/null || true
 OBJ2_PID=""
 
+echo
+echo "== filtro CHANGED (candidatos previos + set + next changed)"
+BASE=$(wc -l < "$OUT")
+feed "set $EXPECTED 30000 i32"
+for _ in $(seq 1 30); do
+    sed -n "$((BASE + 1)),\$p" "$OUT" | grep -q 'Nuevo' && break
+    sleep 0.3
+done
+sleep 0.5
+feed 'next changed' 'count' 'results 10'
+sleep 2
+TAIL=$(sed -n "$((BASE + 1)),\$p" "$OUT")
+echo "$TAIL" | grep -m1 'Next Scan'
+# Las filas de resultados llevan el prompt por delante ("mt(pid)> [ n] 0x..."),
+# asi que se buscan como subcadena, no ancladas al inicio de linea.
+RES=$(echo "$TAIL" | grep '\[ *0\] 0x')
+echo "$RES" | grep -q "$NEXP" || fail "next changed no conserva 'dinero'"
+echo "$RES" | grep -q '= 30000' || fail "next changed no refleja el valor 30000"
+echo "OK: next changed encuentra 'dinero' (20000 -> 30000)"
+
 feed 'quit'
 sleep 0.5
 echo
