@@ -18,6 +18,7 @@ namespace mt {
 void Scanner::clear() {
     candidates_.clear();
     truncated_ = false;
+    warned_ = false;
 }
 
 void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
@@ -32,6 +33,8 @@ void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
             truncated_ = true;
             return false;
         }
+        if (!warned_ && candidates_.size() >= kWarnCandidates)
+            warned_ = true;
         candidates_.push_back({addr, v});
         return true;
     };

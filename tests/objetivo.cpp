@@ -6,10 +6,13 @@
 //
 // Compilar: g++ -O0 -g objetivo.cpp -o objetivo
 //   (-O0 es importante: sin optimizacion las variables se quedan en memoria)
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/select.h>
 #include <unistd.h>
@@ -20,6 +23,11 @@ volatile uint16_t nivel       = 7;      // para probar int16/uint16
 volatile float    velocidad   = 1.5f;   // para probar float
 volatile int64_t  puntuacion  = 100000; // para probar int64
 volatile char     mensaje[64] = "hola memorytool"; // para probar strings
+
+// Memoria anonima extra (opcional): se mapea si se pasa un tamanio en MB
+// como argumento. Sirve para probar escaneos con millones de candidatos
+// (first unknown) y los limites de candidatos del escaner.
+static volatile char* g_extra_mem = nullptr;
 
 static void handle_command(const std::string& line) {
     if (line == "q" || line == "quit" || line == "exit") {
@@ -52,7 +60,24 @@ static void handle_command(const std::string& line) {
     printf("  comando desconocido: %s\n", line.c_str());
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // Memoria extra opcional: objetivo [MB]  ->  mmap N MiB legibles.
+    if (argc > 1) {
+        long mb = atol(argv[1]);
+        if (mb > 0) {
+            void* p = mmap(nullptr, (size_t)mb * 1024 * 1024,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (p != MAP_FAILED) {
+                g_extra_mem = (volatile char*)p;
+                printf("Extra: %ld MiB de memoria anonima legible mapeados (%p)\n",
+                       mb, (void*)g_extra_mem);
+            } else {
+                printf("Extra: fallo de mmap (%s)\n", strerror(errno));
+            }
+        }
+    }
+
     // Conceder explicitamente permiso de ptrace.
     // Con ptrace_scope=1 (Yama) un proceso solo puede trazar a sus hijos o a
     // quien le haya dado permiso con PR_SET_PTRACER. Este programa de prueba

@@ -291,6 +291,8 @@ static void run_repl(std::optional<int> initial_pid) {
                        type_name(type), display_value(*target, type).c_str());
             if (scanner.truncated())
                 printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
+            if (scanner.warned())
+                printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
             continue;
         }
 

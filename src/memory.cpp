@@ -78,7 +78,16 @@ bool Memory::open(int pid, std::string& err) {
     if (r == -1) {
         r = ptrace(PTRACE_ATTACH, pid, nullptr, 0);
     } else {
-        ptrace(PTRACE_INTERRUPT, pid, nullptr, 0);
+        // SEIZE no detiene el proceso: pedimos una parada explicita con
+        // PTRACE_INTERRUPT. Si falla (p. ej. el proceso murio justo despues
+        // de SEIZE), esperar en waitpid podria bloquearse indefinidamente:
+        // liberamos la relacion de traza (detach) y reportamos el error.
+        if (ptrace(PTRACE_INTERRUPT, pid, nullptr, 0) == -1) {
+            err = std::string("ptrace(PTRACE_INTERRUPT): ") + strerror(errno);
+            traced_ = true; // la relacion de traza quedo concedida: cerrarla
+            close();
+            return false;
+        }
     }
     if (r == -1) {
         if (errno == EPERM)
@@ -128,7 +137,17 @@ void Memory::close() {
         fd_ = -1;
     }
     if (traced_) {
-        ptrace(PTRACE_DETACH, pid_, nullptr, 0);
+        // CRIT-3: si el detach falla, avisar y reanudar el proceso como
+        // ultimo recurso. ESRCH es benigno (el tracee ya no existe, o esta
+        // corriendo sin parada de ptrace: el kernel libera la traza cuando
+        // nuestro proceso termina); no hay nada que reanudar en ese caso.
+        if (ptrace(PTRACE_DETACH, pid_, nullptr, 0) == -1 && errno != ESRCH) {
+            fprintf(stderr,
+                    "AVISO (MemoryTool): no se pudo detach del proceso %d: %s.\n"
+                    "Reanudando el proceso con PTRACE_CONT (mejor esfuerzo).\n",
+                    pid_, strerror(errno));
+            ptrace(PTRACE_CONT, pid_, nullptr, 0);
+        }
         traced_ = false;
     }
     pid_ = 0;

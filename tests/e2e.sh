@@ -21,18 +21,21 @@ if [ ! -x "$BIN" ] || [ ! -x "$OBJ" ]; then
 fi
 
 LOG=$(mktemp)
+LOG2=$(mktemp)
 OUT=$(mktemp)
 FIFO=$(mktemp -u)
 rm -f "$FIFO"
 mkfifo "$FIFO"
 
 OBJ_PID=""
+OBJ2_PID=""
 MT_PID=""
 cleanup() {
     exec 3>&- 2>/dev/null || true
     [ -n "$MT_PID" ] && kill "$MT_PID" 2>/dev/null || true
     [ -n "$OBJ_PID" ] && kill "$OBJ_PID" 2>/dev/null || true
-    rm -f "$LOG" "$OUT" "$FIFO"
+    [ -n "$OBJ2_PID" ] && kill "$OBJ2_PID" 2>/dev/null || true
+    rm -f "$LOG" "$LOG2" "$OUT" "$FIFO"
 }
 trap cleanup EXIT
 
@@ -82,6 +85,17 @@ echo
 echo "== proceso en la lista:"
 "$BIN" list | grep -E 'objetivo|PID' | head -3
 
+echo
+echo "== error paths del motor de memoria (con timeout, sin cuelgues):"
+ATT1=$(timeout 5 "$BIN" attach 1 <<< 'quit' 2>&1 || true)
+echo "$ATT1" | grep -q 'permiso denegado' \
+    && echo "OK: attach a PID 1 rechazado (ptrace_scope=1 / Yama)" \
+    || echo "NOTA: este entorno no aplica la restriccion Yama a PID 1 (no es un fallo)"
+ATTX=$(timeout 5 "$BIN" attach 99999999 <<< 'quit' 2>&1 || true)
+echo "$ATTX" | grep -q 'no existe el proceso' \
+    && echo "OK: attach a PID inexistente -> error controlado" \
+    || { echo "FALLO: attach a PID inexistente: $(echo "$ATTX" | head -3)"; exit 1; }
+
 EXPECTED=$(grep -m1 'dinero' "$LOG" | grep -o '0x[0-9a-f]*' || true)
 [ -n "$EXPECTED" ] || fail "no se pudo leer la direccion de 'dinero' del log"
 # Normalizada sin ceros a la izquierda (el escaner imprime 16 digitos)
@@ -121,6 +135,22 @@ tail -n 25 "$OUT" | grep -m1 'Next Scan'
 tail -n 25 "$OUT" | grep -q "$NEXP" || fail "la direccion de 'dinero' no sobrevive al Next Scan (20000)"
 
 echo
+echo "== STRESS: first unknown + next 20000 (millones de candidatos)"
+feed 'first unknown i32' 'count'
+wait_out "Escaneo 'unknown'" || fail "no llego el resultado del first unknown"
+sleep 1.5
+feed 'next 20000 i32' 'count' 'results 10'
+sleep 2
+UNKBLOCK=$(sed -n "/Escaneo 'unknown'/,\$p" "$OUT")
+UNKCOUNT=$(echo "$UNKBLOCK" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1)
+echo "unknown: ${UNKCOUNT:-?} posiciones legibles"
+[ -n "$UNKCOUNT" ] && [ "$UNKCOUNT" -ge 1000000 ] \
+    || fail "unknown scan sospechosamente pequeno (${UNKCOUNT:-?})"
+echo "$UNKBLOCK" | grep -m1 'Next Scan'
+echo "$UNKBLOCK" | grep -q "$NEXP" \
+    || fail "first unknown + next 20000 no conserva la direccion de 'dinero'"
+
+echo
 echo "== visor hexadecimal de $EXPECTED"
 feed "view $EXPECTED 32"
 wait_out 'Memoria en' || fail "no llego el visor hexadecimal"
@@ -157,6 +187,32 @@ echo
 echo "== comprobando que 'objetivo' ahora muestra 99999..."
 wait_log 'Dinero: 99999' || fail "el proceso no refleja el nuevo valor"
 grep -m1 'Dinero: 99999' "$LOG"
+
+echo
+echo "== CRIT-1: limites de candidatos (aviso a 10M, truncado a 20M)"
+( sleep 20 ) | "$OBJ" 18 > "$LOG2" 2>&1 &
+OBJ2_PID=$!
+PID2=""
+for _ in $(seq 1 50); do
+    PID2=$(grep -m1 -o 'PID: [0-9]*' "$LOG2" | grep -o '[0-9]*' || true)
+    [ -n "$PID2" ] && break
+    sleep 0.2
+done
+[ -n "$PID2" ] || fail "objetivo grande no arranco"
+echo "objetivo grande PID=$PID2 (18 MiB extra)"
+OUT2=$(printf 'first unknown i32\ncount\nquit\n' | timeout 60 "$BIN" "$PID2" 2>&1 || true)
+echo "$OUT2" | grep -q 'truncado' \
+    && echo "OK: escaneo truncado al limite de candidatos" \
+    || { echo "FALLO: el escaneo no se trunco al limite (¿kMaxCandidates > 20M?)"; echo "$OUT2" | grep -iE 'unknown|AVISO' || true; exit 1; }
+echo "$OUT2" | grep -q 'muy grande' \
+    && echo "OK: aviso de candidatos elevados (>= 10M)" \
+    || { echo "FALLO: no aparecio el aviso de candidatos elevados"; echo "$OUT2" | grep -iE 'unknown|AVISO' || true; exit 1; }
+C2=$(echo "$OUT2" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1)
+echo "candidatos retenidos: ${C2:-?}"
+[ "$C2" = "20000000" ] || { echo "FALLO: limite de candidatos distinto de 20000000 (obtenido ${C2:-?})"; exit 1; }
+echo "OK: el limite es exactamente 20M"
+kill "$OBJ2_PID" 2>/dev/null || true
+OBJ2_PID=""
 
 feed 'quit'
 sleep 0.5

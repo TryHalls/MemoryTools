@@ -35,6 +35,8 @@ public:
     bool has_results() const { return !candidates_.empty(); }
     size_t count() const { return candidates_.size(); }
     bool truncated() const { return truncated_; }
+    // true si la lista de candidatos supero el umbral de aviso (kWarnCandidates)
+    bool warned() const { return warned_; }
     const std::vector<Candidate>& results() const { return candidates_; }
 
     // Primer escaneo sobre las regiones legibles.
@@ -54,8 +56,13 @@ private:
     std::vector<Candidate> candidates_;
     DataType type_ = DataType::I32;
     bool truncated_ = false;
+    bool warned_ = false;
 
-    static constexpr size_t kMaxCandidates = 50u * 1000u * 1000u;
+    // CRIT-1: el limite baja de 50M a 20M (~320 MiB) para no agotar la RAM
+    // del Chromebook (6.5 GiB, sin swap). A partir de kWarnCandidates se
+    // advierte del consumo elevado.
+    static constexpr size_t kMaxCandidates = 20u * 1000u * 1000u;
+    static constexpr size_t kWarnCandidates = 10u * 1000u * 1000u;
     static constexpr size_t kChunk = 4u * 1024u * 1024u;
 };
 

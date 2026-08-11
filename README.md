@@ -219,8 +219,9 @@ Detalles de diseño:
   candidatos. Cada candidato guarda su valor anterior para los filtros.
 - Cada comando hace `attach → operación → detach`: el proceso objetivo se
   detiene brevemente solo durante la lectura/escritura y sigue su curso.
-- Límite de seguridad de 50 M candidatos (≈ 800 MiB) con aviso, para no
-  agotar la RAM del Chromebook.
+- Límite de seguridad de 20 M candidatos (≈ 320 MiB) con aviso a partir de
+  10 M, para no agotar la RAM del Chromebook. Un `first unknown` sobre
+  procesos grandes (navegadores, IDEs) puede truncarse.
 
 ## Pruebas
 
