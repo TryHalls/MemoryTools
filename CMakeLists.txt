@@ -11,6 +11,8 @@ endif()
 # ---- Herramienta principal ----
 add_executable(memorytool
   src/main.cpp
+  src/session.cpp
+  src/command.cpp
   src/process.cpp
   src/memory.cpp
   src/scanner.cpp

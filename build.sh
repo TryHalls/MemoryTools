@@ -5,7 +5,8 @@ cd "$(dirname "$0")"
 mkdir -p build
 
 g++ -std=c++17 -O2 -Wall -Wextra \
-    src/main.cpp src/process.cpp src/memory.cpp src/scanner.cpp src/pattern.cpp \
+    src/main.cpp src/session.cpp src/command.cpp src/process.cpp \
+    src/memory.cpp src/scanner.cpp src/pattern.cpp \
     -o build/memorytool
 
 g++ -std=c++17 -O0 -g -Wall -Wextra \
