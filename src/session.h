@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 
+#include "address_table.h"
 #include "memory.h"
 #include "scanner.h"
 #include "types.h"
@@ -53,10 +54,17 @@ public:
     DataType scan_type() const { return scan_type_; }
     void set_scan_type(DataType t) { scan_type_ = t; }
 
+    // --- Tabla de direcciones -------------------------------------------
+    // Pertenece a la sesion: al cambiar de proceso objetivo sus entradas se
+    // marcan stale (las direcciones absolutas dejan de ser fiables).
+    AddressTable& table() { return table_; }
+    const AddressTable& table() const { return table_; }
+
 private:
     std::optional<int> pid_;
     Scanner scanner_;
     DataType scan_type_ = DataType::I32;
+    AddressTable table_;
 };
 
 } // namespace mt

@@ -16,6 +16,7 @@
 #include <string>
 #include <unistd.h>
 
+#include "address_table.h"
 #include "memory.h"
 #include "pattern.h"
 #include "process.h"
@@ -80,6 +81,31 @@ static bool has_target(const Session& s) {
     if (s.has_pid()) return true;
     printf("Primero selecciona un proceso (attach <pid>).\n");
     return false;
+}
+
+// Parsea un indice decimal (para 'results'/'table').
+static bool parse_index(const std::string& s, size_t& out) {
+    if (s.empty()) return false;
+    char* end = nullptr;
+    unsigned long long v = std::strtoull(s.c_str(), &end, 10);
+    if (end == s.c_str() || *end != '\0') return false;
+    out = (size_t)v;
+    return true;
+}
+
+// Une tokens como descripcion. Si el resultado va entre comillas dobles
+// ("descripcion con espacios"), las quita: la CLI divide por espacios, asi
+// que las comillas llegan como parte del primer/ultimo token.
+static std::string join_desc(const CommandArgs& args, size_t from) {
+    std::string d;
+    for (size_t i = from; i < args.size(); ++i) {
+        if (i > from) d += ' ';
+        d += args[i];
+    }
+    if (d.size() >= 2 && d.front() == '"' && d.back() == '"') {
+        d = d.substr(1, d.size() - 2);
+    }
+    return d;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +386,73 @@ static CommandResult cmd_view(const CommandArgs& args, Session& s) {
     return {};
 }
 
+// Resultado de una escritura de memoria.
+struct WriteOutcome {
+    bool ok = false;   // true si la escritura se completo y verifico
+    std::string msg;   // texto completo a mostrar (o el error)
+};
+
+// Escribe 'value' (tipo 'type') en 'addr' a traves de Session: comprueba la
+// region (existencia + escribible), adjunta con las garantias de Session,
+// lee el valor actual, escribe y relee para verificar. Es el mecanismo
+// unico de escritura; lo usan 'set' y 'table set' (no se duplica logica).
+static WriteOutcome write_value(Session& s, uint64_t addr, DataType type,
+                                const Value& value) {
+    WriteOutcome o;
+    char b[512];
+
+    auto regions = parse_maps(s.pid());
+    auto r = region_at(regions, addr);
+    if (!r) {
+        snprintf(b, sizeof b, "La direccion 0x%llx no pertenece a ninguna region.\n",
+                 (unsigned long long)addr);
+        o.msg = b;
+        return o;
+    }
+    if (!r->writable()) {
+        o.msg = "La region no es escribible (" + r->perms + ").\n";
+        return o;
+    }
+
+    const size_t w = type_size(type);
+    std::string err;
+    bool ok = s.with_memory([&](Memory& mem) {
+        uint8_t cur[8] = {0};
+        ssize_t got = mem.read(addr, cur, w);
+        if (got != (ssize_t)w) {
+            snprintf(b, sizeof b, "No se pudo leer el valor actual en 0x%llx\n",
+                     (unsigned long long)addr);
+            o.msg = b;
+            return;
+        }
+        Value old = value_from_bytes(cur, w);
+        snprintf(b, sizeof b, "Actual: 0x%llx = %s\n", (unsigned long long)addr,
+                 display_value(old, type).c_str());
+        o.msg = b;
+
+        ssize_t wr = mem.write(addr, &value.bits, w);
+        if (wr != (ssize_t)w) {
+            snprintf(b, sizeof b, "Error de escritura (%zd bytes escritos)\n", wr);
+            o.msg += b;
+            return;
+        }
+        uint8_t ver[8] = {0};
+        if (mem.read(addr, ver, w) == (ssize_t)w) {
+            Value nv = value_from_bytes(ver, w);
+            snprintf(b, sizeof b, "Nuevo:  0x%llx = %s %s\n", (unsigned long long)addr,
+                     display_value(nv, type).c_str(),
+                     value_equal(nv, value, type) ? "(verificado)" : "(NO verificado)");
+            o.msg += b;
+            o.ok = true;
+        }
+    }, err);
+    if (!ok) {
+        o.msg = "Error: " + err + "\n";
+        return o;
+    }
+    return o;
+}
+
 static CommandResult cmd_set(const CommandArgs& args, Session& s) {
     if (!has_target(s)) return {};
     if (args.size() < 2) {
@@ -379,46 +472,8 @@ static CommandResult cmd_set(const CommandArgs& args, Session& s) {
         return {};
     }
 
-    auto regions = parse_maps(s.pid());
-    auto r = region_at(regions, addr);
-    if (!r) {
-        printf("La direccion 0x%llx no pertenece a ninguna region.\n",
-               (unsigned long long)addr);
-        return {};
-    }
-    if (!r->writable()) {
-        printf("La region no es escribible (%s).\n", r->perms.c_str());
-        return {};
-    }
-
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        const size_t w = type_size(type);
-        uint8_t cur[8] = {0};
-        ssize_t got = mem.read(addr, cur, w);
-        if (got != (ssize_t)w) {
-            printf("No se pudo leer el valor actual en 0x%llx\n",
-                   (unsigned long long)addr);
-            return;
-        }
-        Value old = value_from_bytes(cur, w);
-        printf("Actual: 0x%llx = %s\n", (unsigned long long)addr,
-               display_value(old, type).c_str());
-
-        ssize_t wr = mem.write(addr, &v.bits, w);
-        if (wr != (ssize_t)w) {
-            printf("Error de escritura (%zd bytes escritos)\n", wr);
-            return;
-        }
-        uint8_t ver[8] = {0};
-        if (mem.read(addr, ver, w) == (ssize_t)w) {
-            Value nv = value_from_bytes(ver, w);
-            printf("Nuevo:  0x%llx = %s %s\n", (unsigned long long)addr,
-                   display_value(nv, type).c_str(),
-                   value_equal(nv, v, type) ? "(verificado)" : "(NO verificado)");
-        }
-    }, err);
-    if (!ok) printf("Error: %s\n", err.c_str());
+    WriteOutcome wo = write_value(s, addr, type, v);
+    printf("%s", wo.msg.c_str());
     return {};
 }
 
@@ -451,6 +506,279 @@ static CommandResult cmd_info(const CommandArgs& args, Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// Comando 'table': Address Table de la sesion.
+//
+//   table                       listar entradas
+//   table add <dir> [tipo] [desc...]
+//   table add-result <idx> [desc...]
+//   table remove <idx> | clear | toggle <idx>
+//   table read [idx] | set <idx> <valor>
+//   table save <archivo> | load <archivo>
+
+static CommandResult cmd_table_list(Session& s) {
+    if (s.table().empty()) {
+        printf("La tabla esta vacia. Usa 'table add' o 'table add-result'.\n");
+        return {};
+    }
+    printf("%-4s %-20s %-9s %-24s %s\n", "ID", "Address", "Type", "Description", "Enabled");
+    for (size_t i = 0; i < s.table().size(); ++i) {
+        const AddressEntry& e = *s.table().get(i);
+        printf("%-4zu 0x%016llx %-9s %-24s %s%s\n", i,
+               (unsigned long long)e.address, type_name(e.type),
+               e.description.c_str(), e.enabled ? "yes" : "no",
+               e.stale ? "  (stale)" : "");
+    }
+    return {};
+}
+
+static CommandResult cmd_table_add(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: table add <direccion> [tipo] [descripcion...]\n");
+        return {};
+    }
+    uint64_t addr = 0;
+    if (!parse_addr(args[0], addr)) {
+        printf("Direccion invalida: %s\n", args[0].c_str());
+        return {};
+    }
+    DataType type = DataType::I32;
+    size_t di = 1;
+    if (args.size() >= 2 && parse_type(args[1], type)) di = 2;
+    std::string desc = join_desc(args, di);
+
+    size_t idx = s.table().add(addr, type, desc);
+    printf("Entrada %zu anadida: 0x%016llx (%s) \"%s\"\n", idx,
+           (unsigned long long)addr, type_name(type), desc.c_str());
+    return {};
+}
+
+static CommandResult cmd_table_add_result(const CommandArgs& args, Session& s) {
+    if (!s.scanner().has_results()) {
+        printf("No hay resultados previos; usa 'first' primero.\n");
+        return {};
+    }
+    if (args.empty()) {
+        printf("Uso: table add-result <indice> [descripcion...]\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    const auto& res = s.scanner().results();
+    if (idx >= res.size()) {
+        printf("Indice %zu fuera de rango (hay %zu resultados).\n", idx, res.size());
+        return {};
+    }
+    std::string desc = join_desc(args, 1);
+    size_t nidx = s.table().add(res[idx].addr, s.scan_type(), desc);
+    printf("Entrada %zu anadida desde results[%zu]: 0x%016llx (%s)\n", nidx, idx,
+           (unsigned long long)res[idx].addr, type_name(s.scan_type()));
+    return {};
+}
+
+static CommandResult cmd_table_remove(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: table remove <indice>\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    if (!s.table().remove(idx)) {
+        printf("No existe la entrada %zu.\n", idx);
+        return {};
+    }
+    printf("Entrada %zu eliminada.\n", idx);
+    return {};
+}
+
+static CommandResult cmd_table_clear(const CommandArgs&, Session& s) {
+    s.table().clear();
+    printf("Tabla vaciada.\n");
+    return {};
+}
+
+// Lee y muestra una entrada. 'mem' ya debe estar abierta. Devuelve true si
+// la lectura se completo (marca la entrada como verificada en el proceso
+// actual).
+static bool read_entry_print(Memory& mem, const std::vector<Region>& regions,
+                             size_t idx, AddressEntry& e) {
+    auto r = region_at(regions, e.address);
+    if (!r) {
+        printf("[%zu] 0x%016llx: no pertenece a ninguna region.\n", idx,
+               (unsigned long long)e.address);
+        return false;
+    }
+    if (!r->readable()) {
+        printf("[%zu] 0x%016llx: region no legible (%s).\n", idx,
+               (unsigned long long)e.address, r->perms.c_str());
+        return false;
+    }
+    const size_t w = type_size(e.type);
+    uint8_t buf[8] = {0};
+    ssize_t got = mem.read(e.address, buf, w);
+    if (got != (ssize_t)w) {
+        printf("[%zu] 0x%016llx: no se pudo leer (%zd bytes).\n", idx,
+               (unsigned long long)e.address, got);
+        return false;
+    }
+    Value v = value_from_bytes(buf, w);
+    printf("[%zu] 0x%016llx = %s (%s)%s\n", idx, (unsigned long long)e.address,
+           display_value(v, e.type).c_str(), type_name(e.type),
+           e.stale ? "  (stale)" : "");
+    e.stale = false; // relectura exitosa en el proceso actual
+    return true;
+}
+
+static CommandResult cmd_table_read(const CommandArgs& args, Session& s) {
+    if (!has_target(s)) return {};
+    if (s.table().empty()) {
+        printf("La tabla esta vacia.\n");
+        return {};
+    }
+    auto regions = parse_maps(s.pid());
+
+    // Indice especifico.
+    if (!args.empty()) {
+        size_t idx = 0;
+        if (!parse_index(args[0], idx)) {
+            printf("Indice invalido: %s\n", args[0].c_str());
+            return {};
+        }
+        AddressEntry* e = s.table().get(idx);
+        if (!e) {
+            printf("No existe la entrada %zu.\n", idx);
+            return {};
+        }
+        if (!e->enabled) {
+            printf("La entrada %zu esta desactivada (usa 'table toggle %zu').\n", idx, idx);
+            return {};
+        }
+        std::string err;
+        bool ok = s.with_memory([&](Memory& mem) {
+            read_entry_print(mem, regions, idx, *e);
+        }, err);
+        if (!ok) printf("Error: %s\n", err.c_str());
+        return {};
+    }
+
+    // Todas las entradas activas, en un solo attach.
+    std::string err;
+    bool ok = s.with_memory([&](Memory& mem) {
+        for (size_t i = 0; i < s.table().size(); ++i) {
+            AddressEntry* e = s.table().get(i);
+            if (!e->enabled) continue;
+            read_entry_print(mem, regions, i, *e);
+        }
+    }, err);
+    if (!ok) printf("Error: %s\n", err.c_str());
+    return {};
+}
+
+static CommandResult cmd_table_set(const CommandArgs& args, Session& s) {
+    if (!has_target(s)) return {};
+    if (args.size() < 2) {
+        printf("Uso: table set <indice> <valor>\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    AddressEntry* e = s.table().get(idx);
+    if (!e) {
+        printf("No existe la entrada %zu.\n", idx);
+        return {};
+    }
+    if (!e->enabled) {
+        printf("La entrada %zu esta desactivada (usa 'table toggle %zu').\n", idx, idx);
+        return {};
+    }
+    Value v;
+    if (!parse_value(args[1], e->type, v)) {
+        printf("Valor invalido: %s (tipo %s)\n", args[1].c_str(), type_name(e->type));
+        return {};
+    }
+    WriteOutcome wo = write_value(s, e->address, e->type, v);
+    if (wo.ok) e->stale = false;
+    printf("%s", wo.msg.c_str());
+    return {};
+}
+
+static CommandResult cmd_table_toggle(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: table toggle <indice>\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    AddressEntry* e = s.table().get(idx);
+    if (!e) {
+        printf("No existe la entrada %zu.\n", idx);
+        return {};
+    }
+    e->enabled = !e->enabled;
+    printf("Entrada %zu %s.\n", idx, e->enabled ? "activada" : "desactivada");
+    return {};
+}
+
+static CommandResult cmd_table_save(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: table save <archivo>\n");
+        return {};
+    }
+    std::string err;
+    if (!s.table().save(args[0], err)) {
+        printf("Error al guardar: %s\n", err.c_str());
+        return {};
+    }
+    printf("Tabla guardada (%zu entradas) en %s\n", s.table().size(), args[0].c_str());
+    return {};
+}
+
+static CommandResult cmd_table_load(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: table load <archivo>\n");
+        return {};
+    }
+    std::string err;
+    if (!s.table().load(args[0], err)) {
+        printf("Error al cargar: %s\n", err.c_str());
+        return {};
+    }
+    printf("Tabla cargada: %zu entradas desde %s\n", s.table().size(), args[0].c_str());
+    return {};
+}
+
+// Dispatch de subcomandos de 'table'.
+static CommandResult cmd_table(const CommandArgs& args, Session& s) {
+    if (args.empty()) return cmd_table_list(s);
+
+    const std::string& sub = args[0];
+    CommandArgs rest(args.begin() + 1, args.end());
+    if (sub == "add") return cmd_table_add(rest, s);
+    if (sub == "add-result") return cmd_table_add_result(rest, s);
+    if (sub == "remove") return cmd_table_remove(rest, s);
+    if (sub == "clear") return cmd_table_clear(rest, s);
+    if (sub == "read") return cmd_table_read(rest, s);
+    if (sub == "set") return cmd_table_set(rest, s);
+    if (sub == "toggle") return cmd_table_toggle(rest, s);
+    if (sub == "save") return cmd_table_save(rest, s);
+    if (sub == "load") return cmd_table_load(rest, s);
+
+    printf("Subcomando de tabla desconocido: %s (usa 'help')\n", sub.c_str());
+    return {};
+}
+
+// ---------------------------------------------------------------------------
 // Tabla de comandos y dispatch
 
 static const CommandDef kCommands[] = {
@@ -476,6 +804,14 @@ static const CommandDef kCommands[] = {
     {"view", "view <direccion> [len]               Visor hexadecimal", cmd_view},
     {"set", "set <direccion> <valor> [tipo]       Escribir valor en memoria", cmd_set},
     {"info", "info <direccion>                     Informacion de la region", cmd_info},
+    {"table",
+     "table [add|add-result|read|set|toggle|remove|clear|save|load]  Tabla de direcciones\n"
+     "  table add <direccion> [tipo] [desc]    Anadir direccion manualmente\n"
+     "  table add-result <idx> [desc]          Anadir entrada desde 'results'\n"
+     "  table read [idx] | set <idx> <valor>   Leer / escribir valor actual\n"
+     "  table toggle <idx> | remove <idx>      Activar-desactivar / eliminar\n"
+     "  table clear | save <f> | load <f>      Vaciar / guardar / cargar",
+     cmd_table},
     {"help", "help | quit", cmd_help},
     // Alias ocultos en 'help' (misma funcion que el comando principal).
     {"quit", nullptr, cmd_quit},

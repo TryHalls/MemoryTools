@@ -30,11 +30,13 @@ mkfifo "$FIFO"
 OBJ_PID=""
 OBJ2_PID=""
 MT_PID=""
+TF=""
 cleanup() {
     exec 3>&- 2>/dev/null || true
     [ -n "$MT_PID" ] && kill "$MT_PID" 2>/dev/null || true
     [ -n "$OBJ_PID" ] && kill "$OBJ_PID" 2>/dev/null || true
     [ -n "$OBJ2_PID" ] && kill "$OBJ2_PID" 2>/dev/null || true
+    [ -n "$TF" ] && rm -f "$TF"
     rm -f "$LOG" "$LOG2" "$OUT" "$FIFO"
 }
 trap cleanup EXIT
@@ -264,6 +266,47 @@ RES=$(echo "$TAIL" | grep '\[ *0\] 0x' || true)
 contains RES "$NEXP" || fail "next changed no conserva 'dinero'"
 contains RES '= 30000' || fail "next changed no refleja el valor 30000"
 echo "OK: next changed encuentra 'dinero' (20000 -> 30000)"
+
+echo
+echo "== ADDRESS TABLE: add-result, read, set, save/clear/load, toggle =="
+TF=$(mktemp)
+feed 'table add-result 0 "dinero"'
+wait_out 'Entrada 0 anadida desde results' || fail "table add-result no respondio"
+feed 'table'
+wait_out 'dinero' || fail "la tabla no muestra la entrada"
+feed 'table read 0'
+wait_out '\[0\] 0x' || fail "table read no respondio"
+sleep 0.3
+BLOCKT=$(tail -n 5 "$OUT")
+contains BLOCKT '= 30000' || fail "table read no muestra el valor 30000"
+feed 'table set 0 424242'
+wait_out 'Nuevo' || fail "table set no respondio"
+wait_log 'Dinero: 424242' || fail "el proceso no refleja el valor escrito desde la tabla"
+feed "table save $TF"
+wait_out 'guardada' || fail "table save no respondio"
+grep -q 'int32 1 "dinero"' "$TF" || { echo "FALLO: archivo de tabla incorrecto:"; cat "$TF"; exit 1; }
+feed 'table clear'
+wait_out 'vaciada' || fail "table clear no respondio"
+feed 'table'
+wait_out 'esta vacia' || fail "la tabla no quedo vacia"
+feed "table load $TF"
+wait_out 'cargada' || fail "table load no respondio"
+feed 'table'
+wait_out 'dinero' || fail "la entrada no se restauro tras load"
+feed 'table read 0'
+wait_out '\[0\] 0x' || fail "table read (restaurada) no respondio"
+sleep 0.3
+BLOCKT2=$(tail -n 5 "$OUT")
+contains BLOCKT2 '= 424242' || fail "la entrada restaurada no se lee (424242)"
+feed 'table toggle 0'
+wait_out 'desactivada' || fail "table toggle no respondio"
+feed 'table read 0'
+wait_out 'desactivada' || fail "table read no respeta 'disabled'"
+feed 'table toggle 0'
+wait_out 'activada' || fail "table toggle (re) no respondio"
+rm -f "$TF"
+TF=""
+echo "OK: Address Table completa (add-result/read/set/save/clear/load/toggle)"
 
 feed 'quit'
 sleep 0.5

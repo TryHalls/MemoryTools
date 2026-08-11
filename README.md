@@ -33,7 +33,8 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Visor hexadecimal (`view`) | ✅ (ETAPA 13, versión mínima) |
 | Escritura de memoria autorizada (`set`) | ✅ (ETAPA 17, versión mínima) |
 | Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
-| Punteros, tabla de direcciones, GUI | ⏳ siguientes etapas |
+| Address Table (`table`, persistente) | ✅ (ETAPA 16, primera versión) |
+| Punteros, GUI | ⏳ siguientes etapas |
 
 ## Requisitos
 
@@ -145,12 +146,76 @@ results [n]                          Mostrar las primeras n coincidencias
 view <direccion> [len]               Visor hexadecimal
 set <direccion> <valor> [tipo]       Escribir valor en memoria
 info <direccion>                     Información de la región
+table                                Listar entradas de la tabla
+table add <dir> [tipo] [desc]        Añadir dirección manualmente
+table add-result <idx> [desc]        Añadir entrada desde 'results'
+table read [idx]                     Leer/actualizar el valor actual
+table set <idx> <valor>              Escribir un nuevo valor (tipo de la entrada)
+table toggle <idx> | remove <idx>    Activar-desactivar / eliminar
+table clear | save <f> | load <f>    Vaciar / guardar / cargar
 help | quit
 ```
 
 Tipos: `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64` (alias: `int`, `float`,
 `double`, `byte`, ...). Los valores numéricos se escriben en decimal o con
 prefijo `0x` para hexadecimal; las direcciones se aceptan con o sin `0x`.
+
+## Address Table
+
+La tabla guarda direcciones encontradas por el escáner (o añadidas a mano)
+para seguirlas observando y modificando durante la sesión. Cada entrada
+contiene: **address**, **type**, **description** y **enabled**. El valor
+actual **no** se almacena: se relee de memoria cuando hace falta.
+
+```text
+mt(1234)> first 12345
+mt(1234)> results
+[   0] 0x7f1234567890 = 12345  (0x00003039) (int32)
+mt(1234)> table add-result 0 "dinero"
+Entrada 0 anadida desde results[0]: 0x7f1234567890 (i32)
+mt(1234)> table
+ID   Address              Type      Description              Enabled
+0    0x00007f1234567890   i32       dinero                   yes
+mt(1234)> table read 0
+[0] 0x00007f1234567890 = 12345  (0x00003039) (i32)
+mt(1234)> table set 0 99999
+Actual: 0x7f1234567890 = 12345  (0x00003039)
+Nuevo:  0x7f1234567890 = 99999  (0x0001869f) (verificado)
+mt(1234)> table save tabla.txt
+mt(1234)> table load tabla.txt
+```
+
+- `table read`/`table set` usan las mismas garantías de `Session` (attach →
+  operación → detach) y el mismo mecanismo de escritura que `set`.
+- Las entradas desactivadas (`table toggle`) se conservan pero no se leen ni
+  escriben.
+- Al cambiar de proceso (`attach <nuevo>`), las entradas se marcan como
+  `(stale)`: las direcciones absolutas ya no son fiables. No se borran; una
+  relectura exitosa las deja como verificadas.
+- `detach` conserva la tabla; las operaciones de memoria piden proceso.
+
+### Formato de archivo (texto, v1)
+
+Una entrada por línea; `#` = comentario. La dirección se guarda como
+hexadecimal de 16 dígitos (64 bits seguros); la descripción va entre
+comillas dobles con escapes `\"`, `\\` y `\n`:
+
+```
+# MemoryTool Address Table v1
+0x00007f1234567890 i32 1 "dinero"
+0x000055a92c9ab29e float 0 "velocidad del coche"
+```
+
+Columnas: `address type enabled description`. `enabled` es `1`/`0`.
+
+### Limitaciones
+
+- La tabla usa **direcciones absolutas**: dependen de ASLR y solo son válidas
+  mientras el proceso (y su mapeo) siga siendo el mismo. Tras reiniciar un
+  programa, las direcciones guardadas apuntarán a otra cosa o a nada; por eso
+  al cambiar de proceso las entradas se marcan `(stale)`. (El Pointer Scanner
+  de una fase futura resolverá direcciones dinámicas; de momento la tabla
+  trabaja con las direcciones absolutas actuales.)
 
 ## Permisos y seguridad (importante)
 
@@ -197,12 +262,16 @@ MemoryTool/
 │   ├── memory.h/.cpp   # Regiones /maps + acceso /mem con ptrace
 │   ├── scanner.h/.cpp  # Motor First/Next Scan con filtros
 │   ├── pattern.h/.cpp  # Pattern/AOB scanner (wildcards ??)
+│   ├── address_table.h/.cpp  # Address Table (almacenamiento + save/load)
+│   ├── session.h/.cpp  # Estado de sesión (proceso, escáner, tabla)
+│   ├── command.h/.cpp  # Capa de comandos (dispatcher + handlers)
 │   └── pointer.h/.cpp  # (siguiente etapa) Punteros y offsets
 ├── tests/
 │   ├── objetivo.cpp    # Programa de prueba (variable conocida)
 │   ├── e2e.sh          # Prueba de extremo a extremo (proceso real)
 │   ├── test_types.cpp  # Tests unitarios de src/types.h
 │   ├── test_memory.cpp # Tests unitarios de parse_maps_line/region_at
+│   ├── test_address_table.cpp  # Tests unitarios de AddressTable
 │   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)
@@ -235,16 +304,20 @@ bash tests/unit_tests.sh
 ```
 
 Compila y ejecuta `build/test_types` (parseo de valores, comparación,
-`value_from_bytes`, tipos) y `build/test_memory` (parseo de líneas de
-`/proc/PID/maps` con strings simulados y selección de región por dirección).
-Cada binario devuelve 0 si todo pasa y != 0 si hay fallos; también pueden
-compilarse y ejecutarse a mano:
+`value_from_bytes`, tipos), `build/test_memory` (parseo de líneas de
+`/proc/PID/maps` con strings simulados y selección de región por dirección)
+y `build/test_address_table` (add/remove/clear/get, enabled, save/load con
+round-trip, descripciones con espacios y comillas, tipos, direcciones de 64
+bits). Cada binario devuelve 0 si todo pasa y != 0 si hay fallos; también
+pueden compilarse y ejecutarse a mano:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_types.cpp -o build/test_types
 ./build/test_types
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_memory.cpp src/memory.cpp -o build/test_memory
 ./build/test_memory
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_address_table.cpp src/address_table.cpp -o build/test_address_table
+./build/test_address_table
 ```
 
 ### Test de extremo a extremo (proceso real)
@@ -258,8 +331,9 @@ La prueba lanza `objetivo`, le cambia el valor programáticamente y verifica
 que el escáner real encuentra la dirección exacta de `dinero` (comparándola
 con `&dinero`), la inspecciona y la modifica, comprobando que el proceso
 refleja el cambio. Cubre también First/Next Scan, `unknown`, `changed`,
-pattern scanner con y sin wildcards, y los límites de candidatos (aviso a
-10 M, truncado a 20 M).
+pattern scanner con y sin wildcards, los límites de candidatos (aviso a
+10 M, truncado a 20 M) y la Address Table completa (add-result → read →
+set verificado en el proceso → save → clear → load → toggle).
 
 ## Hoja de ruta
 
@@ -282,7 +356,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
 | 14 | Pattern/AOB Scanner | ✅ |
 | 15 | Pointer Scanner | ⏳ |
-| 16 | Address Table | ⏳ |
+| 16 | Address Table | ✅ (primera versión) |
 | 17 | Modificar/restaurar memoria | ◐ (versión mínima: `set`) |
 | 18 | Optimizar velocidad y RAM | ⏳ |
 | 19 | GUI ligera | ⏳ |

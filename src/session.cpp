@@ -10,7 +10,10 @@ bool Session::attach(int target, std::string& err) {
     if (!probe.open(target, err)) return false;
     probe.close();
 
-    if (pid_ && *pid_ != target) scanner_.clear(); // resultados del PID anterior
+    if (pid_ && *pid_ != target) {
+        scanner_.clear();          // resultados del PID anterior
+        table_.mark_all_stale();   // direcciones absolutas ya no son fiables
+    }
     pid_ = target;
     return true;
 }
