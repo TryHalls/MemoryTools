@@ -21,6 +21,28 @@ static std::string trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+bool parse_maps_line(const std::string& line, Region& out) {
+    Region r;
+    char perms[8] = {0};
+    char dev[16] = {0};
+    unsigned long start = 0, end = 0, off = 0;
+    unsigned long long inode = 0;
+    int consumed = 0;
+    // formato: start-end perms offset dev inode pathname
+    int n = sscanf(line.c_str(), "%lx-%lx %7s %lx %15s %llu %n",
+                   &start, &end, perms, &off, dev, &inode, &consumed);
+    if (n < 6) return false;
+    out.start = start;
+    out.end = end;
+    out.perms = perms;
+    out.offset = off;
+    out.dev = dev;
+    out.inode = (uint64_t)inode;
+    if (consumed > 0) out.path = trim(line.c_str() + consumed);
+    else out.path.clear();
+    return true;
+}
+
 std::vector<Region> parse_maps(int pid) {
     std::vector<Region> out;
     FILE* f = fopen(("/proc/" + std::to_string(pid) + "/maps").c_str(), "r");
@@ -29,23 +51,7 @@ std::vector<Region> parse_maps(int pid) {
     char line[1024];
     while (fgets(line, sizeof line, f)) {
         Region r;
-        char perms[8] = {0};
-        char dev[16] = {0};
-        unsigned long start = 0, end = 0, off = 0;
-        unsigned long long inode = 0;
-        int consumed = 0;
-        // formato: start-end perms offset dev inode pathname
-        int n = sscanf(line, "%lx-%lx %7s %lx %15s %llu %n",
-                       &start, &end, perms, &off, dev, &inode, &consumed);
-        if (n < 6) continue;
-        r.start = start;
-        r.end = end;
-        r.perms = perms;
-        r.offset = off;
-        r.dev = dev;
-        r.inode = (uint64_t)inode;
-        if (consumed > 0) r.path = trim(line + consumed);
-        out.push_back(std::move(r));
+        if (parse_maps_line(line, r)) out.push_back(std::move(r));
     }
     fclose(f);
     return out;

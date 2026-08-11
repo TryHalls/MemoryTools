@@ -46,6 +46,21 @@ fail() {
     exit 1
 }
 
+# contains <nombre-de-variable> <subcadena>: comprueba si la variable contiene
+# la subcadena SIN usar pipes ni grep -q. Con `set -o pipefail`, un
+# `echo "$VAR" | grep -q "$PAT"` puede fallar en falso: cuando grep -q
+# encuentra la coincidencia sale antes de tiempo y el escritor del pipe puede
+# recibir SIGPIPE, lo que hace que el pipeline devuelva 141 en lugar de 0.
+# (Observado de forma intermitente en esta misma prueba con buffers grandes.)
+contains() {
+    local varname="$1"
+    local s="${!varname}"
+    case "$s" in
+        *"$2"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # --- 'objetivo' con cambios programados: a los 3s -> 15000, a los 7s -> 20000
 ( sleep 3; echo 15000; sleep 4; echo 20000; sleep 60 ) | "$OBJ" > "$LOG" 2>&1 &
 OBJ_PID=$!
@@ -83,18 +98,23 @@ wait_out 'mt(' || fail "memorytool no arranco"
 
 echo
 echo "== proceso en la lista:"
-"$BIN" list | grep -E 'objetivo|PID' | head -3
+"$BIN" list | grep -E 'objetivo|PID' | head -3 || true
 
 echo
 echo "== error paths del motor de memoria (con timeout, sin cuelgues):"
 ATT1=$(timeout 5 "$BIN" attach 1 <<< 'quit' 2>&1 || true)
-echo "$ATT1" | grep -q 'permiso denegado' \
-    && echo "OK: attach a PID 1 rechazado (ptrace_scope=1 / Yama)" \
-    || echo "NOTA: este entorno no aplica la restriccion Yama a PID 1 (no es un fallo)"
+if contains ATT1 'permiso denegado'; then
+    echo "OK: attach a PID 1 rechazado (ptrace_scope=1 / Yama)"
+else
+    echo "NOTA: este entorno no aplica la restriccion Yama a PID 1 (no es un fallo)"
+fi
 ATTX=$(timeout 5 "$BIN" attach 99999999 <<< 'quit' 2>&1 || true)
-echo "$ATTX" | grep -q 'no existe el proceso' \
-    && echo "OK: attach a PID inexistente -> error controlado" \
-    || { echo "FALLO: attach a PID inexistente: $(echo "$ATTX" | head -3)"; exit 1; }
+if contains ATTX 'no existe el proceso'; then
+    echo "OK: attach a PID inexistente -> error controlado"
+else
+    echo "FALLO: attach a PID inexistente: $(echo "$ATTX" | head -3)"
+    exit 1
+fi
 
 EXPECTED=$(grep -m1 'dinero' "$LOG" | grep -o '0x[0-9a-f]*' || true)
 [ -n "$EXPECTED" ] || fail "no se pudo leer la direccion de 'dinero' del log"
@@ -119,8 +139,9 @@ echo "== NEXT SCAN (15000 int32)"
 feed 'next 15000 i32' 'count' 'results 20'
 wait_out 'Next Scan' || fail "no hubo respuesta del Next Scan"
 sleep 0.5
-tail -n 25 "$OUT" | grep -m1 'Next Scan'
-tail -n 25 "$OUT" | grep -q "$NEXP" || fail "la direccion de 'dinero' no sobrevive al Next Scan (15000)"
+tail -n 25 "$OUT" | grep -m1 'Next Scan' || true
+BLOCK25=$(tail -n 25 "$OUT")
+contains BLOCK25 "$NEXP" || fail "la direccion de 'dinero' no sobrevive al Next Scan (15000)"
 
 echo
 echo "== esperando que 'objetivo' cambie dinero a 20000..."
@@ -131,8 +152,9 @@ echo "== NEXT SCAN (20000 int32)"
 feed 'next 20000 i32' 'count' 'results 20'
 wait_out 'Next Scan' || fail "no hubo respuesta del Next Scan"
 sleep 0.5
-tail -n 25 "$OUT" | grep -m1 'Next Scan'
-tail -n 25 "$OUT" | grep -q "$NEXP" || fail "la direccion de 'dinero' no sobrevive al Next Scan (20000)"
+tail -n 25 "$OUT" | grep -m1 'Next Scan' || true
+BLOCK25=$(tail -n 25 "$OUT")
+contains BLOCK25 "$NEXP" || fail "la direccion de 'dinero' no sobrevive al Next Scan (20000)"
 
 echo
 echo "== STRESS: first unknown + next 20000 (millones de candidatos)"
@@ -142,12 +164,12 @@ sleep 1.5
 feed 'next 20000 i32' 'count' 'results 10'
 sleep 2
 UNKBLOCK=$(sed -n "/Escaneo 'unknown'/,\$p" "$OUT")
-UNKCOUNT=$(echo "$UNKBLOCK" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1)
+UNKCOUNT=$(echo "$UNKBLOCK" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1 || true)
 echo "unknown: ${UNKCOUNT:-?} posiciones legibles"
 [ -n "$UNKCOUNT" ] && [ "$UNKCOUNT" -ge 1000000 ] \
     || fail "unknown scan sospechosamente pequeno (${UNKCOUNT:-?})"
-echo "$UNKBLOCK" | grep -m1 'Next Scan'
-echo "$UNKBLOCK" | grep -q "$NEXP" \
+echo "$UNKBLOCK" | grep -m1 'Next Scan' || true
+contains UNKBLOCK "$NEXP" \
     || fail "first unknown + next 20000 no conserva la direccion de 'dinero'"
 
 echo
@@ -164,8 +186,9 @@ MSJ=$(grep -m1 'mensaje' "$LOG" | grep -o '0x[0-9a-f]*' | sed -E 's/^0x0*//' || 
 feed 'pattern 68 6f 6c 61 20 6d 65 6d 6f 72 79 74 6f 6f 6c'
 wait_out 'Pattern Scan' || fail "no llego el resultado del Pattern Scan"
 sleep 0.5
-tail -n 30 "$OUT" | grep -m1 'Pattern Scan'
-tail -n 30 "$OUT" | grep -q "$MSJ" || fail "el Pattern Scan exacto no encuentra 'mensaje' (esperada $MSJ)"
+tail -n 30 "$OUT" | grep -m1 'Pattern Scan' || true
+BLOCK30=$(tail -n 30 "$OUT")
+contains BLOCK30 "$MSJ" || fail "el Pattern Scan exacto no encuentra 'mensaje' (esperada $MSJ)"
 
 echo
 echo "== PATTERN SCAN con wildcards: 20 4e ?? ?? (primeros bytes de 'dinero' = 20000 LE)"
@@ -173,8 +196,8 @@ feed 'pattern 20 4e ?? ??'
 wait_out 'con wildcards' || fail "no llego el resultado del Pattern Scan con wildcards"
 sleep 0.5
 BLOCK=$(sed -n '/con wildcards/,$p' "$OUT")
-echo "$BLOCK" | grep -m1 'Pattern Scan'
-echo "$BLOCK" | grep -q "$NEXP" || fail "el Pattern Scan con wildcards no encuentra 'dinero' (esperada $NEXP)"
+echo "$BLOCK" | grep -m1 'Pattern Scan' || true
+contains BLOCK "$NEXP" || fail "el Pattern Scan con wildcards no encuentra 'dinero' (esperada $NEXP)"
 
 echo
 echo "== escritura: set $EXPECTED 99999 int32"
@@ -201,13 +224,21 @@ done
 [ -n "$PID2" ] || fail "objetivo grande no arranco"
 echo "objetivo grande PID=$PID2 (18 MiB extra)"
 OUT2=$(printf 'first unknown i32\ncount\nquit\n' | timeout 60 "$BIN" "$PID2" 2>&1 || true)
-echo "$OUT2" | grep -q 'truncado' \
-    && echo "OK: escaneo truncado al limite de candidatos" \
-    || { echo "FALLO: el escaneo no se trunco al limite (¿kMaxCandidates > 20M?)"; echo "$OUT2" | grep -iE 'unknown|AVISO' || true; exit 1; }
-echo "$OUT2" | grep -q 'muy grande' \
-    && echo "OK: aviso de candidatos elevados (>= 10M)" \
-    || { echo "FALLO: no aparecio el aviso de candidatos elevados"; echo "$OUT2" | grep -iE 'unknown|AVISO' || true; exit 1; }
-C2=$(echo "$OUT2" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1)
+if contains OUT2 'truncado'; then
+    echo "OK: escaneo truncado al limite de candidatos"
+else
+    echo "FALLO: el escaneo no se trunco al limite (¿kMaxCandidates > 20M?)"
+    echo "$OUT2" | grep -iE 'unknown|AVISO' || true
+    exit 1
+fi
+if contains OUT2 'muy grande'; then
+    echo "OK: aviso de candidatos elevados (>= 10M)"
+else
+    echo "FALLO: no aparecio el aviso de candidatos elevados"
+    echo "$OUT2" | grep -iE 'unknown|AVISO' || true
+    exit 1
+fi
+C2=$(echo "$OUT2" | grep -m1 "Escaneo 'unknown'" | grep -o '[0-9]*' | tail -1 || true)
 echo "candidatos retenidos: ${C2:-?}"
 [ "$C2" = "20000000" ] || { echo "FALLO: limite de candidatos distinto de 20000000 (obtenido ${C2:-?})"; exit 1; }
 echo "OK: el limite es exactamente 20M"
@@ -226,12 +257,12 @@ sleep 0.5
 feed 'next changed' 'count' 'results 10'
 sleep 2
 TAIL=$(sed -n "$((BASE + 1)),\$p" "$OUT")
-echo "$TAIL" | grep -m1 'Next Scan'
+echo "$TAIL" | grep -m1 'Next Scan' || true
 # Las filas de resultados llevan el prompt por delante ("mt(pid)> [ n] 0x..."),
 # asi que se buscan como subcadena, no ancladas al inicio de linea.
-RES=$(echo "$TAIL" | grep '\[ *0\] 0x')
-echo "$RES" | grep -q "$NEXP" || fail "next changed no conserva 'dinero'"
-echo "$RES" | grep -q '= 30000' || fail "next changed no refleja el valor 30000"
+RES=$(echo "$TAIL" | grep '\[ *0\] 0x' || true)
+contains RES "$NEXP" || fail "next changed no conserva 'dinero'"
+contains RES '= 30000' || fail "next changed no refleja el valor 30000"
 echo "OK: next changed encuentra 'dinero' (20000 -> 30000)"
 
 feed 'quit'

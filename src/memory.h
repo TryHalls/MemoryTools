@@ -27,6 +27,11 @@ struct Region {
 // Lee /proc/PID/maps del proceso. Devuelve lista vacia si no hay acceso.
 std::vector<Region> parse_maps(int pid);
 
+// Parsea UNA linea de /proc/PID/maps (formato: start-end perms offset dev
+// inode [pathname]). Devuelve false si la linea no tiene el formato esperado.
+// Expuesta para poder testear el parseo con strings simulados.
+bool parse_maps_line(const std::string& line, Region& out);
+
 // Region que contiene la direccion dada (si existe).
 std::optional<Region> region_at(const std::vector<Region>& regions, uint64_t addr);
 

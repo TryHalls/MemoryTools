@@ -200,7 +200,10 @@ MemoryTool/
 │   └── pointer.h/.cpp  # (siguiente etapa) Punteros y offsets
 ├── tests/
 │   ├── objetivo.cpp    # Programa de prueba (variable conocida)
-│   └── e2e.sh          # Prueba automatizada de extremo a extremo
+│   ├── e2e.sh          # Prueba de extremo a extremo (proceso real)
+│   ├── test_types.cpp  # Tests unitarios de src/types.h
+│   ├── test_memory.cpp # Tests unitarios de parse_maps_line/region_at
+│   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)
 └── README.md
@@ -225,6 +228,27 @@ Detalles de diseño:
 
 ## Pruebas
 
+### Tests unitarios (rápidos, sin proceso externo)
+
+```bash
+bash tests/unit_tests.sh
+```
+
+Compila y ejecuta `build/test_types` (parseo de valores, comparación,
+`value_from_bytes`, tipos) y `build/test_memory` (parseo de líneas de
+`/proc/PID/maps` con strings simulados y selección de región por dirección).
+Cada binario devuelve 0 si todo pasa y != 0 si hay fallos; también pueden
+compilarse y ejecutarse a mano:
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_types.cpp -o build/test_types
+./build/test_types
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_memory.cpp src/memory.cpp -o build/test_memory
+./build/test_memory
+```
+
+### Test de extremo a extremo (proceso real)
+
 ```bash
 ./build.sh
 bash tests/e2e.sh
@@ -233,7 +257,9 @@ bash tests/e2e.sh
 La prueba lanza `objetivo`, le cambia el valor programáticamente y verifica
 que el escáner real encuentra la dirección exacta de `dinero` (comparándola
 con `&dinero`), la inspecciona y la modifica, comprobando que el proceso
-refleja el cambio.
+refleja el cambio. Cubre también First/Next Scan, `unknown`, `changed`,
+pattern scanner con y sin wildcards, y los límites de candidatos (aviso a
+10 M, truncado a 20 M).
 
 ## Hoja de ruta
 
