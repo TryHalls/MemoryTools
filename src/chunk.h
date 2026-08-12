@@ -33,17 +33,29 @@ inline constexpr size_t kChunkBytes = 4u * 1024u * 1024u;
 // completamente dentro de una region. El callback devuelve true para
 // continuar o false para detener todo el recorrido (p. ej. al alcanzar un
 // limite de resultados).
+//
+// stride: si es > 1 solo se visitan ventanas que empiezan en posiciones
+// alineadas a stride (con window_size == stride == 8, por ejemplo, se
+// recorren las posiciones de 8 bytes sin solapamiento). Con stride = 1 el
+// comportamiento es exactamente el historico: ventana a ventana con
+// solapamiento de w-1 bytes entre bloques.
 template <typename Fn>
 void for_each_window(Memory& mem, const std::vector<Region>& regions,
-                     size_t window_size, Fn&& callback) {
+                     size_t window_size, size_t stride, Fn&& callback) {
     if (window_size == 0) return;
     const size_t w = window_size;
+    const size_t s = stride == 0 ? 1 : stride;
     std::vector<uint8_t> buf(kChunkBytes);
 
     for (const Region& r : regions) {
         if (!r.readable()) continue;
         uint64_t pos = r.start;
         while (pos < r.end) {
+            // Mantener la lectura alineada al stride (una lectura parcial
+            // puede dejar pos desalineada; redondear hacia arriba nunca se
+            // salta una ventana valida, que siempre empieza alineada).
+            pos = ((pos + s - 1) / s) * s;
+            if (pos >= r.end) break;
             const size_t want =
                 (size_t)std::min<uint64_t>(kChunkBytes, r.end - pos);
             ssize_t got = mem.read(pos, buf.data(), want);
@@ -53,19 +65,36 @@ void for_each_window(Memory& mem, const std::vector<Region>& regions,
             }
             const size_t n = (size_t)got;
             if (n >= w) {
-                for (size_t i = 0; i + w <= n; ++i) {
+                size_t last = 0;
+                bool any = false;
+                for (size_t i = 0; i + w <= n; i += s) {
                     if (!callback(buf.data() + i, pos + i)) return;
+                    last = i;
+                    any = true;
                 }
-                // Solapamiento: los ultimos w-1 bytes se releen en el
-                // siguiente bloque para no perder ventanas en el limite.
-                pos += n - (w - 1);
+                if (any) {
+                    // Con stride 1, pos += (n - w) + 1 == n - (w - 1):
+                    // solapamiento historico. Con stride s, la siguiente
+                    // posicion alineada tras la ultima ventana visitada
+                    // (ningun alineado en (last, n] cabe una ventana).
+                    pos += last + s;
+                } else {
+                    // Lectura parcial menor que la ventana: no hay ventanas
+                    // completas aqui; se avanza solo lo leido.
+                    pos += n;
+                }
             } else {
-                // Lectura parcial menor que la ventana: no hay ventanas
-                // completas aqui; se avanza solo lo leido.
                 pos += n;
             }
         }
     }
+}
+
+// Compatibilidad: la version sin stride equivale a stride = 1.
+template <typename Fn>
+void for_each_window(Memory& mem, const std::vector<Region>& regions,
+                     size_t window_size, Fn&& callback) {
+    for_each_window(mem, regions, window_size, 1, callback);
 }
 
 } // namespace mt

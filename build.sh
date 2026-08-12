@@ -13,4 +13,12 @@ g++ -std=c++17 -O0 -g -Wall -Wextra \
     tests/objetivo.cpp \
     -o build/objetivo
 
-echo "OK: build/memorytool y build/objetivo"
+g++ -std=c++17 -O0 -g -Wall -Wextra \
+    tests/pointer_test.cpp \
+    -o build/pointer_test
+
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/pointer_driver.cpp src/pointer.cpp src/memory.cpp \
+    -o build/pointer_driver
+
+echo "OK: build/memorytool, build/objetivo, build/pointer_test y build/pointer_driver"

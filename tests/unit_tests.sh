@@ -17,6 +17,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/test_address_table.cpp src/address_table.cpp \
     -o build/test_address_table
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_pointer.cpp src/pointer.cpp src/memory.cpp \
+    -o build/test_pointer
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -26,6 +30,9 @@ echo "== test_memory =="
 echo
 echo "== test_address_table =="
 ./build/test_address_table || ok=0
+echo
+echo "== test_pointer =="
+./build/test_pointer || ok=0
 
 if [ "$ok" = 1 ]; then
     echo

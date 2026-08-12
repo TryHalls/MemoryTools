@@ -31,12 +31,16 @@ OBJ_PID=""
 OBJ2_PID=""
 MT_PID=""
 TF=""
+PT_PID=""
+PT=""
 cleanup() {
     exec 3>&- 2>/dev/null || true
     [ -n "$MT_PID" ] && kill "$MT_PID" 2>/dev/null || true
     [ -n "$OBJ_PID" ] && kill "$OBJ_PID" 2>/dev/null || true
     [ -n "$OBJ2_PID" ] && kill "$OBJ2_PID" 2>/dev/null || true
+    [ -n "$PT_PID" ] && kill "$PT_PID" 2>/dev/null || true
     [ -n "$TF" ] && rm -f "$TF"
+    [ -n "$PT" ] && rm -f "$PT"
     rm -f "$LOG" "$LOG2" "$OUT" "$FIFO"
 }
 trap cleanup EXIT
@@ -307,6 +311,87 @@ wait_out 'activada' || fail "table toggle (re) no respondio"
 rm -f "$TF"
 TF=""
 echo "OK: Address Table completa (add-result/read/set/save/clear/load/toggle)"
+
+echo
+echo "== POINTER SCANNER (core: pointer_test + pointer_driver) =="
+PTBIN=build/pointer_test
+PDRV=build/pointer_driver
+if [ ! -x "$PTBIN" ] || [ ! -x "$PDRV" ]; then
+    echo "FALLO: faltan build/pointer_test o build/pointer_driver (ejecuta ./build.sh)"
+    exit 1
+fi
+PT=$(mktemp)
+( sleep 90 ) | "$PTBIN" > "$PT" 2>&1 &
+PT_PID=$!
+PTPID=""
+for _ in $(seq 1 50); do
+    PTPID=$(grep -m1 -o 'PID: [0-9]*' "$PT" | grep -o '[0-9]*' || true)
+    [ -n "$PTPID" ] && break
+    sleep 0.2
+done
+[ -n "$PTPID" ] || fail "pointer_test no arranco"
+echo "pointer_test PID=$PTPID"
+PTARGET=$(grep -m1 '^TARGET:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+NODE1=$(grep -m1 '^NODE1:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+NODE2=$(grep -m1 '^NODE2:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+NODE3=$(grep -m1 '^NODE3:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+CYCLEA=$(grep -m1 '^CYCLEA:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+CYCLEB=$(grep -m1 '^CYCLEB:' "$PT" | grep -o '0x[0-9a-f]*' || true)
+[ -n "$PTARGET" ] && [ -n "$NODE1" ] && [ -n "$NODE2" ] && [ -n "$NODE3" ] \
+    || fail "faltan direcciones en la salida de pointer_test"
+echo "TARGET=$PTARGET"
+echo "NODE1=$NODE1 NODE2=$NODE2 NODE3=$NODE3 CYCLEA=$CYCLEA CYCLEB=$CYCLEB"
+
+echo
+echo "== pointer scan depth=1: espera Node1 -> TARGET =="
+D1=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 1 2>&1 || true)
+contains D1 "$NODE1 $PTARGET" || { echo "$D1"; fail "depth=1 no encuentra Node1->TARGET"; }
+echo "OK: depth=1 encuentra Node1->TARGET"
+
+echo
+echo "== pointer scan depth=2: espera Node2 -> Node1 -> TARGET =="
+D2=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 2 2>&1 || true)
+contains D2 "$NODE2 $NODE1 $PTARGET" \
+    || { echo "$D2"; fail "depth=2 no reconstruye Node2->Node1->TARGET"; }
+echo "OK: depth=2 reconstruye Node2->Node1->TARGET"
+
+echo
+echo "== pointer scan depth=3: espera Node3 -> Node2 -> Node1 -> TARGET =="
+D3=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 2>&1 || true)
+contains D3 "$NODE3 $NODE2 $NODE1 $PTARGET" \
+    || { echo "$D3"; fail "depth=3 no reconstruye la cadena completa"; }
+echo "OK: depth=3 reconstruye Node3->Node2->Node1->TARGET"
+
+echo
+echo "== ciclo controlado (TARGET=CycleB): sin cuelgues y sin cadenas ciclicas =="
+DC=$(timeout 30 "$PDRV" "$PTPID" "$CYCLEB" 3 2>&1 || true)
+contains DC "$CYCLEA $CYCLEB" \
+    || { echo "$DC"; fail "el ciclo no se detecto (esperaba CycleA->CycleB)"; }
+# El ciclo B->A->B se descarta por el control por cadena: ninguna cadena debe
+# EMPEZAR por CycleB (si empezara, seria la cadena ciclica B->A->B). Cadenas
+# aciclicas que terminan en CycleB (p. ej. g_cycle_a -> CycleA -> CycleB) si
+# pueden existir y son correctas.
+if contains DC "chain d=1: $CYCLEB" || contains DC "chain d=2: $CYCLEB" \
+   || contains DC "chain d=3: $CYCLEB"; then
+    echo "FALLO: aparecio una cadena ciclica (empieza por CycleB):"
+    echo "$DC"
+    exit 1
+fi
+echo "OK: ciclo controlado (termina sin colgarse; B->A->B descartada)"
+
+echo
+echo "== truncado por max_edges_per_level =="
+DT=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 1 2>&1 || true)
+contains DT 'edges_truncated=1' \
+    || { echo "$DT"; fail "max_edges=1 no marco edges_truncated"; }
+contains DT "$NODE1 $PTARGET" \
+    || { echo "$DT"; fail "el nivel truncado perdio los resultados ya obtenidos"; }
+echo "OK: nivel truncado por limite de aristas conservando resultados"
+
+kill "$PT_PID" 2>/dev/null || true
+PT_PID=""
+rm -f "$PT"
+PT=""
 
 feed 'quit'
 sleep 0.5
