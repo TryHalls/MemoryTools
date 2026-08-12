@@ -7,7 +7,7 @@ mkdir -p build
 g++ -std=c++17 -O2 -Wall -Wextra \
     src/main.cpp src/session.cpp src/command.cpp src/process.cpp \
     src/memory.cpp src/scanner.cpp src/pattern.cpp src/address_table.cpp \
-    src/pointer.cpp \
+    src/pointer.cpp src/pointer_resolver.cpp \
     -o build/memorytool
 
 g++ -std=c++17 -O0 -g -Wall -Wextra \
@@ -22,4 +22,13 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/pointer_driver.cpp src/pointer.cpp src/memory.cpp \
     -o build/pointer_driver
 
-echo "OK: build/memorytool, build/objetivo, build/pointer_test y build/pointer_driver"
+g++ -std=c++17 -O0 -g -Wall -Wextra \
+    tests/pointer_offset_test.cpp \
+    -o build/pointer_offset_test
+
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/pointer_resolve_driver.cpp \
+    src/pointer_resolver.cpp src/address_table.cpp src/memory.cpp \
+    -o build/pointer_resolve_driver
+
+echo "OK: memorytool, objetivo, pointer_test, pointer_driver, pointer_offset_test y pointer_resolve_driver"

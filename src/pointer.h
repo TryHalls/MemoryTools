@@ -20,9 +20,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "memory.h"
+#include "types.h"
 
 namespace mt {
 
@@ -78,6 +80,40 @@ struct PointerScanResult {
     bool chains_truncated = false; // se alcanzo max_chains
     int levels = 0;                // niveles completados con resultados
     size_t total_edges = 0;        // aristas encontradas en total
+};
+
+// ---------------------------------------------------------------------------
+// V2: representacion persistente de una cadena (Pointer Chain Ref).
+//
+// Diferencia con PointerChain (V1, instantanea): V1 guarda direcciones
+// absolutas del momento del escaneo; V2 guarda RELACIONES que permiten
+// volver a resolver la cadena cuando el proceso cambia (ASLR):
+//
+//   root  -> localiza el PRIMER puntero (modulo + offset de archivo, o una
+//            direccion absoluta como fallback no persistente)
+//   offsets -> desplazamientos APLICADOS DESPUES de cada dereference.
+//              offsets.size() = numero de derefs; el ultimo offset localiza
+//              el valor final (no se dereferencia).
+//   value_type -> tipo del VALOR FINAL (independiente del kind 'pointer':
+//              'pointer' describe el mecanismo, no el tipo).
+//
+// Resolution: addr = root; para cada offset o en offsets: addr = read(addr)
+// + o; valor final = read(addr, value_type).
+
+// Tipo de base de una cadena persistente.
+enum class PointerBaseKind { ABSOLUTE, MODULE };
+
+struct PointerBase {
+    PointerBaseKind kind = PointerBaseKind::ABSOLUTE;
+    uint64_t address = 0;   // ABSOLUTE: direccion de la raiz
+    std::string module;     // MODULE: pathname exacto de /proc/PID/maps
+    uint64_t offset = 0;    // MODULE: offset de archivo de la raiz
+};
+
+struct PointerChainRef {
+    PointerBase root;               // localiza el primer puntero
+    std::vector<uint64_t> offsets;  // steps post-deref (size = derefs)
+    DataType value_type = DataType::I32;
 };
 
 // Busca cadenas de punteros hacia opts.target en las regiones dadas.

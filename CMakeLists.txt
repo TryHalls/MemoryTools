@@ -19,6 +19,7 @@ add_executable(memorytool
   src/pattern.cpp
   src/address_table.cpp
   src/pointer.cpp
+  src/pointer_resolver.cpp
 )
 target_include_directories(memorytool PRIVATE src)
 target_compile_options(memorytool PRIVATE -Wall -Wextra)
@@ -40,3 +41,17 @@ add_executable(pointer_driver
 )
 target_include_directories(pointer_driver PRIVATE src)
 target_compile_options(pointer_driver PRIVATE -Wall -Wextra)
+
+# pointer_offset_test: cadena con offsets y raiz modulo-relative (V2)
+add_executable(pointer_offset_test tests/pointer_offset_test.cpp)
+target_compile_options(pointer_offset_test PRIVATE -Wall -Wextra -O0 -g)
+
+# pointer_resolve_driver: conductor del PointerResolver V2 (tests/e2e.sh)
+add_executable(pointer_resolve_driver
+  tests/pointer_resolve_driver.cpp
+  src/pointer_resolver.cpp
+  src/address_table.cpp
+  src/memory.cpp
+)
+target_include_directories(pointer_resolve_driver PRIVATE src)
+target_compile_options(pointer_resolve_driver PRIVATE -Wall -Wextra)

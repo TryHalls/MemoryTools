@@ -27,6 +27,11 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     src/pattern.cpp src/process.cpp src/address_table.cpp src/pointer.cpp \
     -o build/test_pointer_cmd
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_pointer_v2.cpp \
+    src/pointer_resolver.cpp src/address_table.cpp src/memory.cpp \
+    -o build/test_pointer_v2
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -42,6 +47,9 @@ echo "== test_pointer =="
 echo
 echo "== test_pointer_cmd =="
 ./build/test_pointer_cmd || ok=0
+echo
+echo "== test_pointer_v2 =="
+./build/test_pointer_v2 || ok=0
 
 if [ "$ok" = 1 ]; then
     echo

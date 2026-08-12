@@ -11,9 +11,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "pointer.h"
 #include "types.h"
 
 namespace mt {
@@ -25,6 +27,11 @@ struct AddressEntry {
     std::string description;
     bool enabled = true;       // las operaciones de memoria respetan esto
     bool stale = false;        // direccion posiblemente invalida (cambio de proceso)
+    // Cadena persistente (V2): si esta presente, la entrada es de tipo
+    // 'pointer' DINAMICA: la direccion se RESUELVE siguiendo la cadena
+    // (PointerResolver) en cada operacion. El campo 'type' es el tipo del
+    // VALOR FINAL (value_type), nunca 'pointer'.
+    std::optional<PointerChainRef> ptr;
 };
 
 class AddressTable {
@@ -32,6 +39,12 @@ public:
     // Anade una entrada y devuelve su indice.
     size_t add(uint64_t address, DataType type,
                const std::string& description = "");
+
+    // Anade una entrada dinamica (kind 'pointer'): guarda la cadena
+    // persistente; 'type' de la entrada = ref.value_type. La direccion
+    // absoluta solo se rellena para bases ABSOLUTE (fallback no
+    // persistente); para MODULE se deja a 0 (se resuelve en cada uso).
+    size_t add(const PointerChainRef& ref, const std::string& description = "");
 
     // Elimina la entrada 'index'. Devuelve false si no existe.
     bool remove(size_t index);

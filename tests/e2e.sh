@@ -33,8 +33,12 @@ MT_PID=""
 MT2_PID=""
 TF=""
 TF2=""
+TF3=""
 PT_PID=""
 PT=""
+PT2_PID=""
+PTF=""
+PTF2=""
 cleanup() {
     exec 3>&- 2>/dev/null || true
     exec 4>&- 2>/dev/null || true
@@ -43,9 +47,13 @@ cleanup() {
     [ -n "$OBJ_PID" ] && kill "$OBJ_PID" 2>/dev/null || true
     [ -n "$OBJ2_PID" ] && kill "$OBJ2_PID" 2>/dev/null || true
     [ -n "$PT_PID" ] && kill "$PT_PID" 2>/dev/null || true
+    [ -n "$PT2_PID" ] && kill "$PT2_PID" 2>/dev/null || true
     [ -n "$TF" ] && rm -f "$TF"
     [ -n "$TF2" ] && rm -f "$TF2"
+    [ -n "$TF3" ] && rm -f "$TF3"
     [ -n "$PT" ] && rm -f "$PT"
+    [ -n "$PTF" ] && rm -f "$PTF"
+    [ -n "$PTF2" ] && rm -f "$PTF2"
     rm -f "$LOG" "$LOG2" "$OUT" "$OUT2" "$FIFO" "$FIFO2"
 }
 trap cleanup EXIT
@@ -503,6 +511,75 @@ kill "$PT_PID" 2>/dev/null || true
 PT_PID=""
 rm -f "$PT"
 PT=""
+
+echo
+echo "== POINTER V2: resolucion de cadenas con offsets frente a ASLR =="
+P2BIN=build/pointer_offset_test
+P2DRV=build/pointer_resolve_driver
+if [ ! -x "$P2BIN" ] || [ ! -x "$P2DRV" ]; then
+    echo "FALLO: faltan build/pointer_offset_test o build/pointer_resolve_driver (ejecuta ./build.sh)"
+    exit 1
+fi
+
+# --- intento 1: construir la cadena (module+offset, steps 0x20,0x18), guardar
+# la tabla y resolverla contra el proceso recien lanzado --------------------
+PTF=$(mktemp)
+( sleep 60 ) | "$P2BIN" > "$PTF" 2>&1 &
+PT2_PID=$!
+P2PID=""
+for _ in $(seq 1 50); do
+    P2PID=$(grep -m1 -o 'PID: [0-9]*' "$PTF" | grep -o '[0-9]*' || true)
+    [ -n "$P2PID" ] && break
+    sleep 0.2
+done
+[ -n "$P2PID" ] || fail "pointer_offset_test no arranco (intento 1)"
+P2MOD=$(grep -m1 '^MODULE:' "$PTF" | sed 's/^MODULE: //' || true)
+P2ROOTOFF=$(grep -m1 '^ROOT_OFFSET:' "$PTF" | grep -o '0x[0-9a-f]*' || true)
+PTGT1=$(grep -m1 '^TARGET:' "$PTF" | grep -o '0x[0-9a-f]*' || true)
+[ -n "$P2MOD" ] && [ -n "$P2ROOTOFF" ] && [ -n "$PTGT1" ] \
+    || fail "faltan datos de pointer_offset_test (intento 1)"
+echo "run1: module=$P2MOD root_off=$P2ROOTOFF target=$PTGT1"
+
+TF3=$(mktemp)
+R1=$(timeout 30 "$P2DRV" save "$P2PID" "$TF3" "$P2MOD" "$P2ROOTOFF" "0x20,0x18" i32 "cadena v2" 2>&1 || true)
+contains R1 "RESOLVED=$PTGT1" || { echo "$R1"; fail "la cadena no resuelve al target del proceso 1"; }
+contains R1 "VALUE=4242" || { echo "$R1"; fail "el valor final no es 4242 (intento 1)"; }
+grep -q '^pointer type=int32 ' "$TF3" || { echo "FALLO: linea v2 incorrecta en el archivo:"; cat "$TF3"; exit 1; }
+grep -q 'steps=0x20,0x18' "$TF3" || { echo "FALLO: faltan steps en la linea v2:"; cat "$TF3"; exit 1; }
+echo "OK: intento 1 -> target=$PTGT1, value=4242; tabla guardada (v2)"
+
+# --- reiniciar el proceso (nuevo layout de ASLR) y resolver la MISMA cadena --
+kill "$PT2_PID" 2>/dev/null || true
+PT2_PID=""
+sleep 0.5
+PTF2=$(mktemp)
+( sleep 60 ) | "$P2BIN" > "$PTF2" 2>&1 &
+PT2_PID=$!
+P2PID2=""
+for _ in $(seq 1 50); do
+    P2PID2=$(grep -m1 -o 'PID: [0-9]*' "$PTF2" | grep -o '[0-9]*' || true)
+    [ -n "$P2PID2" ] && break
+    sleep 0.2
+done
+[ -n "$P2PID2" ] || fail "pointer_offset_test no arranco (intento 2)"
+PTGT2=$(grep -m1 '^TARGET:' "$PTF2" | grep -o '0x[0-9a-f]*' || true)
+[ -n "$PTGT2" ] || fail "faltan datos de pointer_offset_test (intento 2)"
+echo "run2: target=$PTGT2"
+
+R2=$(timeout 30 "$P2DRV" resolve "$P2PID2" "$TF3" 2>&1 || true)
+contains R2 "RESOLVED=$PTGT2" || { echo "$R2"; fail "la cadena guardada no resuelve al target del proceso 2"; }
+contains R2 "VALUE=4242" || { echo "$R2"; fail "el valor final no es 4242 (intento 2)"; }
+if [ "$PTGT2" != "$PTGT1" ]; then
+    echo "OK: se resolvio una direccion NUEVA (ASLR): $PTGT1 -> $PTGT2, valor correcto"
+else
+    echo "NOTA: el layout no cambio entre procesos (entorno sin ASLR); la resolucion sigue siendo correcta"
+fi
+
+kill "$PT2_PID" 2>/dev/null || true
+PT2_PID=""
+rm -f "$PTF" "$PTF2" "$TF3"
+PTF=""; PTF2=""; TF3=""
+echo "OK: Pointer V2 (cadena con offsets resuelta frente a ASLR)"
 
 feed 'quit'
 sleep 0.5

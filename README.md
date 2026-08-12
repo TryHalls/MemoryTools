@@ -35,6 +35,7 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
 | Address Table (`table`, persistente) | ✅ (ETAPA 16, primera versión) |
 | Pointer Scanner (core + CLI) | ✅ (ETAPA 15, motor + comandos) |
+| Pointer V2: cadenas persistentes + resolver | ◐ (infraestructura lista; scan con offsets y CLI en la siguiente etapa) |
 | GUI | ⏳ siguiente etapa |
 
 ## Requisitos
@@ -61,6 +62,8 @@ Produce los binarios en `build/`:
 - `build/objetivo` — el programa de prueba del escáner de valores
 - `build/pointer_test` — el programa de prueba del Pointer Scanner
 - `build/pointer_driver` — conductor de prueba del Pointer Scanner (tests)
+- `build/pointer_offset_test` — programa de prueba del Pointer Scanner V2 (cadena con offsets, raíz módulo-relative)
+- `build/pointer_resolve_driver` — conductor de prueba de la resolución V2 (tests)
 
 ## Guía rápida
 
@@ -311,6 +314,59 @@ proceso se reinicia, las direcciones de la cadena apuntarán a otra cosa o a
 nada. Tampoco hay offsets (`base + offset -> ptr`) en esta versión: el motor
 solo encuentra cadenas de punteros directos.
 
+### Pointer V2: cadenas persistentes y resolución (infraestructura)
+
+La FASE 3 añade la **representación persistente** de una cadena
+(`PointerChainRef`) y su **resolver**, para que una cadena siga siendo útil
+cuando el proceso cambia de layout (ASLR):
+
+```
+PointerChainRef = base (module + file offset | absoluta) + offsets + value_type
+
+root (module + 0x123456)
+  ↓ dereference
++0x20
+  ↓ dereference
++0x18
+  ↓
+valor final (según value_type)
+```
+
+- **`PointerBase`** localiza el *primer* puntero: `MODULE` (pathname exacto
+de `/proc/PID/maps` + offset de archivo) o `ABSOLUTE` (fallback no
+persistente). Heap/stack/anónimas **no** se fingen como persistentes: una
+raíz ahí se guarda como `ABSOLUTE`.
+- **`PointerChainRef.offsets`** son los desplazamientos *después de cada*
+*dereference* (el último localiza el valor final; no se dereferencia). La
+localización de la raíz (`module + file offset`) es independiente y se
+calcula después de encontrar la cadena.
+- **`value_type`** es el tipo del **valor final** (i32, f32, ...), separado
+del *kind* `pointer` (que solo describe el mecanismo de resolución).
+- **`PointerResolver`** (`src/pointer_resolver.h/.cpp`) convierte la raíz a
+una dirección absoluta actual y sigue la cadena leyendo punteros de 8
+bytes. No hace attach/detach (recibe `Memory` y regiones abiertas), no
+cachea direcciones entre procesos y devuelve errores explícitos: módulo no
+encontrado, offset fuera del módulo, puntero no legible, cadena rota, valor
+final no legible.
+
+**Formato de archivo v2** (compatible con v1: las líneas `0x...` siguen
+igual; una línea que empieza por `pointer` es una cadena dinámica):
+
+```
+pointer type=int32 module=/home/u/MemoryTool/build/pointer_offset_test root=0x4110 steps=0x20,0x18 enabled=1 "player health"
+```
+
+- `type` = tipo del **valor final** (nunca `pointer`).
+- `module` = pathname exacto de `/proc/PID/maps`; `root` = offset de archivo
+de la raíz (para bases `MODULE`) o dirección absoluta (para `ABSOLUTE`).
+- `steps` = offsets post-deref separados por coma (vacío si no hay derefs).
+- No se persisten `stale`, el valor actual ni la dirección resuelta temporal.
+
+El **scan con offsets** (`pointer scan` V2), la CLI (`pointer add` V2,
+`table read/set` dinámicos) y la migración de entradas v1 llegarán en la
+siguiente etapa; esta fase solo prepara la infraestructura (estructuras,
+resolver y formato).
+
 ### Programa de prueba `pointer_test`
 
 `build/pointer_test` genera deliberadamente la cadena
@@ -375,18 +431,22 @@ MemoryTool/
 │   ├── address_table.h/.cpp  # Address Table (almacenamiento + save/load)
 │   ├── session.h/.cpp  # Estado de sesión (proceso, escáner, tabla)
 │   ├── command.h/.cpp  # Capa de comandos (dispatcher + handlers)
-│   ├── pointer.h/.cpp  # Pointer Scanner (level-scan inverso)
+│   ├── pointer.h/.cpp  # Pointer Scanner (level-scan inverso) + refs V2
+│   ├── pointer_resolver.h/.cpp  # Resolución de cadenas persistentes (V2)
 │   └── chunk.h         # Recorrido por bloques con solapamiento (y stride)
 ├── tests/
 │   ├── objetivo.cpp    # Programa de prueba (variable conocida)
 │   ├── pointer_test.cpp    # Programa de prueba (cadenas de punteros)
 │   ├── pointer_driver.cpp  # Conductor de prueba del Pointer Scanner
+│   ├── pointer_offset_test.cpp  # Programa de prueba V2 (offsets, raíz módulo)
+│   ├── pointer_resolve_driver.cpp  # Conductor de prueba del resolver V2
 │   ├── e2e.sh          # Prueba de extremo a extremo (proceso real)
 │   ├── test_types.cpp  # Tests unitarios de src/types.h
 │   ├── test_memory.cpp # Tests unitarios de parse_maps_line/region_at
 │   ├── test_address_table.cpp  # Tests unitarios de AddressTable
 │   ├── test_pointer.cpp # Tests unitarios del Pointer Scanner (parte pura)
 │   ├── test_pointer_cmd.cpp  # Tests de la integracion pointer + CLI + tabla
+│   ├── test_pointer_v2.cpp  # Tests de la infraestructura V2 (bases, resolver, formatos)
 │   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)
@@ -425,13 +485,16 @@ y `build/test_address_table` (add/remove/clear/get, enabled, save/load con
 round-trip, descripciones con espacios y comillas, tipos, direcciones de 64
 bits) y `build/test_pointer` (clasificación y selección de regiones,
 `FlatHashSet`, y reconstrucción de cadenas con datos sintéticos:
-profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites) y
-`build/test_pointer_cmd` (parsing/validación de `pointer scan` —depth y
+profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites)`build/test_pointer_cmd` (parsing/validación de `pointer scan` —depth y
 opciones—, descripción textual de cadenas, `Session` conservando el último
 `PointerScanResult`, `pointer add` creando la entrada tipo `pointer`, y
-persistencia de ese tipo en el formato de tabla v1). Cada binario devuelve 0
-si todo pasa y != 0 si hay fallos; también pueden compilarse y ejecutarse a
-mano:
+persistencia de ese tipo en el formato de tabla v1) y
+`build/test_pointer_v2` (conversión de raíz absoluta a `module+offset`,
+cálculo inverso con módulo inexistente y offset fuera del módulo,
+resolución de cadenas con offsets `[0]`, `[0x20]` y `[0x20,0x18]` sobre
+buffers sintéticos, independencia entre el kind `pointer` y el `value_type`,
+y round-trip save/load v1+v2). Cada binario devuelve 0 si todo pasa y != 0
+si hay fallos; también pueden compilarse y ejecutarse a mano:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_types.cpp -o build/test_types
@@ -446,6 +509,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer_cmd.cpp \
     src/command.cpp src/session.cpp src/scanner.cpp src/memory.cpp \
     src/pattern.cpp src/process.cpp src/address_table.cpp src/pointer.cpp -o build/test_pointer_cmd
 ./build/test_pointer_cmd
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer_v2.cpp \
+    src/pointer_resolver.cpp src/address_table.cpp src/memory.cpp -o build/test_pointer_v2
+./build/test_pointer_v2
 ```
 
 ### Test de extremo a extremo (proceso real)
@@ -468,7 +534,11 @@ cíclicas, truncado por límite de aristas, y la CLI completa: `pointer scan`
 con depth 1/2/3, `pointer results`, `pointer add` creando una entrada
 `pointer` en la Address Table, y su save/clear/load, además de los errores
 de target inválido, índice inválido, `pointer results` sin escaneo previo y
-`depth=0`/`depth=8`).
+`depth=0`/`depth=8`) y la resolución V2 frente a ASLR: guarda una cadena
+`pointer type=int32 ... steps=0x20,0x18` contra `pointer_offset_test`,
+resuelve al target del proceso, lo reinicia y comprueba que la **misma**
+cadena guardada resuelve a una dirección **nueva** (ASLR) con el mismo
+valor final.
 
 ## Hoja de ruta
 
@@ -490,7 +560,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 12 | Strings y bytes | ⏳ (requiere ampliar `types`) |
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
 | 14 | Pattern/AOB Scanner | ✅ |
-| 15 | Pointer Scanner | ✅ (core + CLI, sin offsets aún) |
+| 15 | Pointer Scanner | ✅ (core + CLI; V2: infraestructura de cadenas persistentes y resolver) |
 | 16 | Address Table | ✅ (primera versión) |
 | 17 | Modificar/restaurar memoria | ◐ (versión mínima: `set`) |
 | 18 | Optimizar velocidad y RAM | ⏳ |

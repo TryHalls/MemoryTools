@@ -70,6 +70,18 @@ size_t AddressTable::add(uint64_t address, DataType type,
     return entries_.size() - 1;
 }
 
+size_t AddressTable::add(const PointerChainRef& ref, const std::string& description) {
+    AddressEntry e;
+    e.type = ref.value_type;   // el tipo es el del VALOR FINAL (no 'pointer')
+    e.description = description;
+    e.ptr = ref;
+    if (ref.root.kind == PointerBaseKind::ABSOLUTE)
+        e.address = ref.root.address;
+    // MODULE: address se deja a 0; se resuelve en cada uso.
+    entries_.push_back(e);
+    return entries_.size() - 1;
+}
+
 bool AddressTable::remove(size_t index) {
     if (index >= entries_.size()) return false;
     entries_.erase(entries_.begin() + (long)index);
@@ -98,16 +110,123 @@ bool AddressTable::save(const std::string& path, std::string& err) const {
     }
     fprintf(f, "# MemoryTool Address Table v1\n");
     for (const auto& e : entries_) {
-        fprintf(f, "0x%016llx %s %d %s\n",
-                (unsigned long long)e.address,
-                type_name(e.type),
-                e.enabled ? 1 : 0,
-                quote_desc(e.description).c_str());
+        if (!e.ptr) {
+            // v1: entrada absoluta (sin cambios).
+            fprintf(f, "0x%016llx %s %d %s\n",
+                    (unsigned long long)e.address,
+                    type_name(e.type),
+                    e.enabled ? 1 : 0,
+                    quote_desc(e.description).c_str());
+        } else {
+            // v2: entrada dinamica (kind 'pointer'). 'type' es el tipo del
+            // valor final; la raiz es module+offset (o direccion absoluta
+            // como fallback no persistente); 'steps' son los offsets post-
+            // deref de la cadena.
+            fprintf(f, "pointer type=%s ", type_name(e.type));
+            if (e.ptr->root.kind == PointerBaseKind::MODULE)
+                fprintf(f, "module=%s root=0x%llx ", e.ptr->root.module.c_str(),
+                        (unsigned long long)e.ptr->root.offset);
+            else
+                fprintf(f, "root=0x%llx ", (unsigned long long)e.ptr->root.address);
+            fprintf(f, "steps=");
+            for (size_t i = 0; i < e.ptr->offsets.size(); ++i) {
+                if (i > 0) fprintf(f, ",");
+                fprintf(f, "0x%llx", (unsigned long long)e.ptr->offsets[i]);
+            }
+            fprintf(f, " enabled=%d %s\n", e.enabled ? 1 : 0,
+                    quote_desc(e.description).c_str());
+        }
     }
     if (fclose(f) != 0) {
         err = std::strerror(errno);
         return false;
     }
+    return true;
+}
+
+// Parsea una linea v2 (primera palabra 'pointer'): clave=valor hasta una
+// descripcion entre comillas. Devuelve false si falta algo obligatorio o el
+// formato es invalido (la linea se salta, igual que las malformadas v1).
+static bool parse_pointer_line(std::istringstream& iss, AddressEntry& ent) {
+    std::vector<std::string> kv;
+    std::string desc_raw;
+    std::string tok;
+    while (iss >> tok) {
+        if (!tok.empty() && tok[0] == '"') {
+            desc_raw = tok;
+            std::string rest;
+            std::getline(iss, rest);
+            desc_raw += rest;
+            break;
+        }
+        kv.push_back(tok);
+    }
+
+    std::string module;
+    bool have_module = false, have_root = false, have_type = false;
+    uint64_t root = 0;
+    std::vector<uint64_t> steps;
+    for (const std::string& t : kv) {
+        size_t eq = t.find('=');
+        if (eq == std::string::npos) return false;
+        const std::string key = t.substr(0, eq);
+        const std::string val = t.substr(eq + 1);
+        if (key == "type") {
+            if (!parse_type(val, ent.type)) return false;
+            // 'pointer' describe el mecanismo, nunca el valor final:
+            if (ent.type == DataType::PTR) return false;
+            have_type = true;
+        } else if (key == "module") {
+            module = val;
+            have_module = true;
+        } else if (key == "root") {
+            errno = 0;
+            char* end = nullptr;
+            unsigned long long v = std::strtoull(val.c_str(), &end, 0);
+            if (end == val.c_str() || *end != '\0' || errno == ERANGE) return false;
+            root = (uint64_t)v;
+            have_root = true;
+        } else if (key == "steps") {
+            if (val.empty()) continue;
+            size_t pos = 0;
+            while (pos < val.size()) {
+                size_t comma = val.find(',', pos);
+                const std::string part = (comma == std::string::npos)
+                                             ? val.substr(pos)
+                                             : val.substr(pos, comma - pos);
+                if (part.empty()) return false;
+                errno = 0;
+                char* end = nullptr;
+                unsigned long long v = std::strtoull(part.c_str(), &end, 0);
+                if (end == part.c_str() || *end != '\0' || errno == ERANGE) return false;
+                steps.push_back((uint64_t)v);
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+        } else if (key == "enabled") {
+            char* end = nullptr;
+            long v = std::strtol(val.c_str(), &end, 10);
+            if (end == val.c_str() || *end != '\0') return false;
+            ent.enabled = (v != 0);
+        }
+        // claves desconocidas se ignoran (formato extensible)
+    }
+    if (!have_type || !have_root) return false; // minimos obligatorios
+
+    PointerChainRef ref;
+    ref.value_type = ent.type;
+    if (have_module) {
+        ref.root.kind = PointerBaseKind::MODULE;
+        ref.root.module = module;
+        ref.root.offset = root;
+    } else {
+        ref.root.kind = PointerBaseKind::ABSOLUTE;
+        ref.root.address = root;
+        ent.address = root;
+    }
+    ref.offsets = std::move(steps);
+    ent.ptr = ref;
+    ent.description = unquote_desc(desc_raw);
     return true;
 }
 
@@ -129,13 +248,24 @@ bool AddressTable::load(const std::string& path, std::string& err) {
         if (s[b] == '#') continue;
 
         std::istringstream iss(s.substr(b, e - b));
-        std::string addr_s, type_s, en_s;
-        if (!(iss >> addr_s >> type_s >> en_s)) continue;
+        std::string first;
+        if (!(iss >> first)) continue;
+
+        if (first == "pointer") {
+            // v2: cadena de punteros dinamica.
+            AddressEntry ent;
+            if (parse_pointer_line(iss, ent)) loaded.push_back(std::move(ent));
+            continue;
+        }
+
+        // v1: linea absoluta (primera palabra = direccion).
+        std::string type_s, en_s;
+        if (!(iss >> type_s >> en_s)) continue;
 
         errno = 0;
         char* end = nullptr;
-        unsigned long long addr = std::strtoull(addr_s.c_str(), &end, 0);
-        if (end == addr_s.c_str() || *end != '\0' || errno == ERANGE) continue;
+        unsigned long long addr = std::strtoull(first.c_str(), &end, 0);
+        if (end == first.c_str() || *end != '\0' || errno == ERANGE) continue;
 
         DataType type;
         if (!parse_type(type_s, type)) continue;
