@@ -20,6 +20,7 @@
 #include "memory.h"
 #include "pattern.h"
 #include "pointer.h"
+#include "pointer_resolver.h"
 #include "process.h"
 #include "types.h"
 
@@ -394,16 +395,16 @@ struct WriteOutcome {
     std::string msg;   // texto completo a mostrar (o el error)
 };
 
-// Escribe 'value' (tipo 'type') en 'addr' a traves de Session: comprueba la
-// region (existencia + escribible), adjunta con las garantias de Session,
-// lee el valor actual, escribe y relee para verificar. Es el mecanismo
-// unico de escritura; lo usan 'set' y 'table set' (no se duplica logica).
-static WriteOutcome write_value(Session& s, uint64_t addr, DataType type,
-                                const Value& value) {
+// Escribe 'value' (tipo 'type') en 'addr' con la memoria YA abierta y las
+// regiones dadas: comprueba region (existencia + escribible), lee el valor
+// actual, escribe y relee para verificar. Es el nucleo unico de escritura;
+// lo usan 'set', 'table set' (absoluta y dinamica) sin duplicar logica.
+static WriteOutcome write_value_at(Memory& mem, const std::vector<Region>& regions,
+                                   uint64_t addr, DataType type,
+                                   const Value& value) {
     WriteOutcome o;
     char b[512];
 
-    auto regions = parse_maps(s.pid());
     auto r = region_at(regions, addr);
     if (!r) {
         snprintf(b, sizeof b, "La direccion 0x%llx no pertenece a ninguna region.\n",
@@ -417,41 +418,48 @@ static WriteOutcome write_value(Session& s, uint64_t addr, DataType type,
     }
 
     const size_t w = type_size(type);
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        uint8_t cur[8] = {0};
-        ssize_t got = mem.read(addr, cur, w);
-        if (got != (ssize_t)w) {
-            snprintf(b, sizeof b, "No se pudo leer el valor actual en 0x%llx\n",
-                     (unsigned long long)addr);
-            o.msg = b;
-            return;
-        }
-        Value old = value_from_bytes(cur, w);
-        snprintf(b, sizeof b, "Actual: 0x%llx = %s\n", (unsigned long long)addr,
-                 display_value(old, type).c_str());
+    uint8_t cur[8] = {0};
+    ssize_t got = mem.read(addr, cur, w);
+    if (got != (ssize_t)w) {
+        snprintf(b, sizeof b, "No se pudo leer el valor actual en 0x%llx\n",
+                 (unsigned long long)addr);
         o.msg = b;
-
-        ssize_t wr = mem.write(addr, &value.bits, w);
-        if (wr != (ssize_t)w) {
-            snprintf(b, sizeof b, "Error de escritura (%zd bytes escritos)\n", wr);
-            o.msg += b;
-            return;
-        }
-        uint8_t ver[8] = {0};
-        if (mem.read(addr, ver, w) == (ssize_t)w) {
-            Value nv = value_from_bytes(ver, w);
-            snprintf(b, sizeof b, "Nuevo:  0x%llx = %s %s\n", (unsigned long long)addr,
-                     display_value(nv, type).c_str(),
-                     value_equal(nv, value, type) ? "(verificado)" : "(NO verificado)");
-            o.msg += b;
-            o.ok = true;
-        }
-    }, err);
-    if (!ok) {
-        o.msg = "Error: " + err + "\n";
         return o;
     }
+    Value old = value_from_bytes(cur, w);
+    snprintf(b, sizeof b, "Actual: 0x%llx = %s\n", (unsigned long long)addr,
+             display_value(old, type).c_str());
+    o.msg = b;
+
+    ssize_t wr = mem.write(addr, &value.bits, w);
+    if (wr != (ssize_t)w) {
+        snprintf(b, sizeof b, "Error de escritura (%zd bytes escritos)\n", wr);
+        o.msg += b;
+        return o;
+    }
+    uint8_t ver[8] = {0};
+    if (mem.read(addr, ver, w) == (ssize_t)w) {
+        Value nv = value_from_bytes(ver, w);
+        snprintf(b, sizeof b, "Nuevo:  0x%llx = %s %s\n", (unsigned long long)addr,
+                 display_value(nv, type).c_str(),
+                 value_equal(nv, value, type) ? "(verificado)" : "(NO verificado)");
+        o.msg += b;
+        o.ok = true;
+    }
+    return o;
+}
+
+// Escribe 'value' (tipo 'type') en 'addr' a traves de Session: regiones +
+// attach + operacion + detach. Usado por 'set' y 'table set' (absoluta).
+static WriteOutcome write_value(Session& s, uint64_t addr, DataType type,
+                                const Value& value) {
+    auto regions = parse_maps(s.pid());
+    WriteOutcome o;
+    std::string err;
+    bool ok = s.with_memory([&](Memory& mem) {
+        o = write_value_at(mem, regions, addr, type, value);
+    }, err);
+    if (!ok) o.msg = "Error: " + err + "\n";
     return o;
 }
 
@@ -522,11 +530,19 @@ static CommandResult cmd_table_list(Session& s) {
         printf("La tabla esta vacia. Usa 'table add' o 'table add-result'.\n");
         return {};
     }
-    printf("%-4s %-20s %-9s %-24s %s\n", "ID", "Address", "Type", "Description", "Enabled");
+    printf("%-4s %-20s %-12s %-24s %s\n", "ID", "Address", "Type", "Description", "Enabled");
     for (size_t i = 0; i < s.table().size(); ++i) {
         const AddressEntry& e = *s.table().get(i);
-        printf("%-4zu 0x%016llx %-9s %-24s %s%s\n", i,
-               (unsigned long long)e.address, type_name(e.type),
+        std::string tcol;
+        if (e.ptr) {
+            tcol = (e.ptr->root.kind == PointerBaseKind::MODULE)
+                       ? "pointer[module]"
+                       : "pointer[abs]";
+        } else {
+            tcol = type_name(e.type);
+        }
+        printf("%-4zu 0x%016llx %-12s %-24s %s%s\n", i,
+               (unsigned long long)e.address, tcol.c_str(),
                e.description.c_str(), e.enabled ? "yes" : "no",
                e.stale ? "  (stale)" : "");
     }
@@ -606,9 +622,23 @@ static CommandResult cmd_table_clear(const CommandArgs&, Session& s) {
 
 // Lee y muestra una entrada. 'mem' ya debe estar abierta. Devuelve true si
 // la lectura se completo (marca la entrada como verificada en el proceso
-// actual).
+// actual). Para entradas dinamicas (kind 'pointer') resuelve la cadena con
+// PointerResolver en CADA lectura (nunca se guarda la direccion resuelta).
 static bool read_entry_print(Memory& mem, const std::vector<Region>& regions,
                              size_t idx, AddressEntry& e) {
+    if (e.ptr) {
+        ResolveResult r = resolve_chain(*e.ptr, mem, regions);
+        if (!r.ok) {
+            printf("[%zu] %s\n", idx, r.error.c_str());
+            return false;
+        }
+        printf("[%zu] 0x%016llx = %s (%s)%s\n", idx,
+               (unsigned long long)r.address,
+               display_value(r.value, e.type).c_str(), type_name(e.type),
+               e.stale ? "  (stale)" : "");
+        e.stale = false;
+        return true;
+    }
     auto r = region_at(regions, e.address);
     if (!r) {
         printf("[%zu] 0x%016llx: no pertenece a ninguna region.\n", idx,
@@ -706,6 +736,26 @@ static CommandResult cmd_table_set(const CommandArgs& args, Session& s) {
         printf("Valor invalido: %s (tipo %s)\n", args[1].c_str(), type_name(e->type));
         return {};
     }
+    if (e->ptr) {
+        // Entrada dinamica: resolver la cadena y escribir en la direccion
+        // resultante (mismo mecanismo que 'set', sin duplicar logica).
+        const std::vector<Region> regions = parse_maps(s.pid());
+        WriteOutcome wo;
+        std::string err;
+        bool ok = s.with_memory([&](Memory& mem) {
+            ResolveResult r = resolve_chain(*e->ptr, mem, regions);
+            if (!r.ok) {
+                wo.msg = "Error al resolver la entrada " +
+                         std::to_string(idx) + ": " + r.error + "\n";
+                return;
+            }
+            wo = write_value_at(mem, regions, r.address, e->type, v);
+        }, err);
+        if (!ok) wo.msg = "Error: " + err + "\n";
+        if (wo.ok) e->stale = false;
+        printf("%s", wo.msg.c_str());
+        return {};
+    }
     WriteOutcome wo = write_value(s, e->address, e->type, v);
     if (wo.ok) e->stale = false;
     printf("%s", wo.msg.c_str());
@@ -791,7 +841,8 @@ static CommandResult cmd_table(const CommandArgs& args, Session& s) {
 PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
     PointerScanArgs out;
     if (args.empty()) {
-        out.error = "Uso: pointer scan <direccion> [depth=N] [code]";
+        out.error = "Uso: pointer scan <direccion> [depth=N] [max_offset=X] "
+                    "[offset_step=S] [module-only] [code] [type=T]";
         return out;
     }
     if (!parse_addr(args[0], out.target)) {
@@ -802,6 +853,10 @@ PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
         const std::string& tok = args[i];
         if (tok == "code") {
             out.include_code = true;
+            continue;
+        }
+        if (tok == "module-only") {
+            out.module_only = true;
             continue;
         }
         if (tok.rfind("depth=", 0) == 0) {
@@ -818,6 +873,43 @@ PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
             out.depth = (int)v;
             continue;
         }
+        if (tok.rfind("max_offset=", 0) == 0) {
+            const std::string v = tok.substr(11);
+            char* end = nullptr;
+            errno = 0;
+            unsigned long long x = std::strtoull(v.c_str(), &end, 0);
+            if (v.empty() || end == v.c_str() || *end != '\0' ||
+                errno == ERANGE || x > 0x10000) {
+                out.error = "max_offset invalido (maximo 0x10000): " +
+                            (v.empty() ? "(vacio)" : v);
+                return out;
+            }
+            out.max_offset = (uint64_t)x;
+            continue;
+        }
+        if (tok.rfind("offset_step=", 0) == 0) {
+            const std::string v = tok.substr(12);
+            char* end = nullptr;
+            errno = 0;
+            unsigned long long x = std::strtoull(v.c_str(), &end, 0);
+            if (v.empty() || end == v.c_str() || *end != '\0' ||
+                errno == ERANGE || x == 0) {
+                out.error = "offset_step debe ser mayor que 0: " +
+                            (v.empty() ? "(vacio)" : v);
+                return out;
+            }
+            out.offset_step = (uint64_t)x;
+            continue;
+        }
+        if (tok.rfind("type=", 0) == 0) {
+            DataType t;
+            if (!parse_type(tok.substr(5), t) || t == DataType::PTR) {
+                out.error = "Tipo invalido: " + tok.substr(5);
+                return out;
+            }
+            out.value_type = t;
+            continue;
+        }
         out.error = "Opcion desconocida: " + tok;
         return out;
     }
@@ -831,6 +923,27 @@ std::string pointer_chain_description(const std::vector<uint64_t>& nodes) {
         if (i > 0) s += " -> ";
         snprintf(b, sizeof b, "0x%016llx", (unsigned long long)nodes[i]);
         s += b;
+    }
+    return s;
+}
+
+std::string pointer_chain_description(const std::vector<uint64_t>& nodes,
+                                      const std::vector<uint64_t>& offsets) {
+    // Intercala los offsets post-deref entre los nodos. Si la cantidad no
+    // cuadra (cadenas V1 sin offsets), se comporta como la version basica.
+    if (offsets.size() != (nodes.empty() ? 0 : nodes.size() - 1))
+        return pointer_chain_description(nodes);
+    std::string s;
+    char b[32];
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (i > 0) s += " -> ";
+        snprintf(b, sizeof b, "0x%016llx", (unsigned long long)nodes[i]);
+        s += b;
+        // offset 0 no se muestra (comportamiento V1 para cadenas directas)
+        if (i < offsets.size() && offsets[i] != 0) {
+            snprintf(b, sizeof b, " -> +0x%llx", (unsigned long long)offsets[i]);
+            s += b;
+        }
     }
     return s;
 }
@@ -862,6 +975,10 @@ static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
     opts.target = pa.target;
     opts.max_depth = pa.depth;
     opts.include_code = pa.include_code;
+    opts.max_offset = pa.max_offset;
+    opts.offset_step = pa.offset_step;
+
+    const DataType vtype = pa.value_type.value_or(s.scan_type());
 
     PointerScanResult res;
     std::string err;
@@ -872,6 +989,20 @@ static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
         printf("Error: %s\n", err.c_str());
         return {};
     }
+    res.value_type = vtype;
+
+    if (pa.module_only) {
+        // Filtrar: solo cadenas cuya raiz (nodes[0]) esta en una region con
+        // pathname de archivo (MODULE, persistente frente a ASLR).
+        std::vector<PointerChain> kept;
+        for (auto& c : res.chains) {
+            if (c.nodes.empty()) continue;
+            const PointerBase b = make_base_from_address(regions, c.nodes[0]);
+            if (b.kind == PointerBaseKind::MODULE)
+                kept.push_back(std::move(c));
+        }
+        res.chains = std::move(kept);
+    }
     s.set_pointer_result(std::move(res));
 
     const PointerScanResult& r2 = s.pointer_result().value();
@@ -880,6 +1011,10 @@ static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
     printf("depth: %d\n", opts.max_depth);
     printf("levels: %d\n", r2.levels);
     printf("chains: %zu\n", r2.chains.size());
+    printf("offsets: 0x0..0x%llx (step 0x%llx)%s\n",
+           (unsigned long long)opts.max_offset,
+           (unsigned long long)opts.offset_step,
+           pa.module_only ? " (solo raices de modulo)" : "");
     if (r2.edges_truncated || r2.chains_truncated) {
         printf("WARNING: pointer scan truncado\n");
         if (r2.edges_truncated)
@@ -888,6 +1023,26 @@ static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
             printf("- limite de cadenas alcanzado (max_chains)\n");
     }
     return {};
+}
+
+// Describe la raiz de una cadena para 'pointer results': MODULE (path +
+// offset) o ABSOLUTE, con su persistencia. Devuelve true si es MODULE.
+static bool print_root_line(const std::vector<Region>& regions,
+                            const PointerChain& c, char* buf, size_t n) {
+    PointerBase b;
+    if (c.nodes.empty()) {
+        snprintf(buf, n, "[root ?]");
+        return false;
+    }
+    b = make_base_from_address(regions, c.nodes[0]);
+    if (b.kind == PointerBaseKind::MODULE) {
+        snprintf(buf, n, "[root MODULE %s +0x%llx] (persistente)",
+                 b.module.c_str(), (unsigned long long)b.offset);
+        return true;
+    }
+    snprintf(buf, n, "[root ABSOLUTE 0x%016llx] (no persistente)",
+             (unsigned long long)b.address);
+    return false;
 }
 
 static CommandResult cmd_pointer_results(const CommandArgs& args, Session& s) {
@@ -900,12 +1055,21 @@ static CommandResult cmd_pointer_results(const CommandArgs& args, Session& s) {
         printf("El ultimo pointer scan no encontro cadenas.\n");
         return {};
     }
+    // Regiones para clasificar la raiz (sin proceso -> ABSOLUTE).
+    std::vector<Region> regions;
+    if (s.has_pid()) regions = parse_maps(s.pid());
+
     size_t n = 10;
     if (!args.empty()) n = (size_t)strtoull(args[0].c_str(), nullptr, 10);
     n = std::min(n, res.chains.size());
     for (size_t i = 0; i < n; ++i) {
         printf("[%zu] depth %d:\n", i, res.chains[i].depth);
-        printf("%s\n", pointer_chain_description(res.chains[i].nodes).c_str());
+        char rootline[512];
+        print_root_line(regions, res.chains[i], rootline, sizeof rootline);
+        printf("  %s\n", rootline);
+        printf("  %s\n",
+               pointer_chain_description(res.chains[i].nodes,
+                                         res.chains[i].offsets).c_str());
     }
     if (n < res.chains.size())
         printf("... y %zu mas. Usa 'pointer results %zu' para verlas todas.\n",
@@ -938,19 +1102,71 @@ static CommandResult cmd_pointer_add(const CommandArgs& args, Session& s) {
         printf("La cadena %zu esta vacia.\n", idx);
         return {};
     }
-    const uint64_t root = c.nodes[0];
-    const std::string desc = pointer_chain_description(c.nodes);
-    const size_t nidx = s.table().add(root, DataType::PTR, desc);
+
+    std::vector<Region> regions;
+    if (s.has_pid()) regions = parse_maps(s.pid());
+    const PointerChainRef ref =
+        make_chain_ref(regions, c.nodes, c.offsets, res.value_type);
+    const std::string desc =
+        pointer_chain_description(c.nodes, c.offsets);
+    const size_t nidx = s.table().add(ref, desc);
+
     printf("Entrada %zu anadida desde la cadena %zu:\n", nidx, idx);
-    printf("  0x%016llx (pointer)\n", (unsigned long long)root);
+    if (ref.root.kind == PointerBaseKind::MODULE)
+        printf("  pointer[module]  (persistente)\n");
+    else
+        printf("  pointer[abs]  (no persistente)\n");
+    printf("  tipo: %s\n", type_name(res.value_type));
     printf("  %s\n", desc.c_str());
+    return {};
+}
+
+static CommandResult cmd_pointer_resolve(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: pointer resolve <indice>\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    AddressEntry* e = s.table().get(idx);
+    if (!e) {
+        printf("No existe la entrada %zu.\n", idx);
+        return {};
+    }
+    if (!e->ptr) {
+        printf("La entrada %zu no es una cadena dinamica (pointer).\n", idx);
+        return {};
+    }
+    if (!has_target(s)) return {};
+
+    const std::vector<Region> regions = parse_maps(s.pid());
+    std::string err;
+    bool ok = s.with_memory([&](Memory& mem) {
+        ResolveResult r = resolve_chain(*e->ptr, mem, regions);
+        if (!r.ok) {
+            printf("Error al resolver la entrada %zu: %s\n", idx,
+                   r.error.c_str());
+            return;
+        }
+        e->stale = false;
+        printf("Entrada %zu resuelta: 0x%016llx = %s (%s)\n", idx,
+               (unsigned long long)r.address,
+               display_value(r.value, e->type).c_str(),
+               type_name(e->type));
+    }, err);
+    if (!ok) printf("Error: %s\n", err.c_str());
     return {};
 }
 
 static CommandResult cmd_pointer(const CommandArgs& args, Session& s) {
     if (args.empty()) {
-        printf("Uso: pointer scan <direccion> [depth=N] [code] | "
-               "pointer results [n] | pointer add <indice>\n");
+        printf("Uso: pointer scan <direccion> [depth=N] [max_offset=X] "
+               "[offset_step=S] [module-only] [code] [type=T] | "
+               "pointer results [n] | pointer add <indice> | "
+               "pointer resolve <indice>\n");
         return {};
     }
     const std::string& sub = args[0];
@@ -958,6 +1174,7 @@ static CommandResult cmd_pointer(const CommandArgs& args, Session& s) {
     if (sub == "scan") return cmd_pointer_scan(rest, s);
     if (sub == "results" || sub == "chains") return cmd_pointer_results(rest, s);
     if (sub == "add") return cmd_pointer_add(rest, s);
+    if (sub == "resolve") return cmd_pointer_resolve(rest, s);
     printf("Subcomando de pointer desconocido: %s (usa 'help')\n", sub.c_str());
     return {};
 }
@@ -997,10 +1214,12 @@ static const CommandDef kCommands[] = {
      "  table clear | save <f> | load <f>      Vaciar / guardar / cargar",
      cmd_table},
     {"pointer",
-     "pointer scan <dir> [depth=N] [code]     Buscar cadenas de punteros hacia una direccion\n"
+     "pointer scan <dir> [depth=N] [max_offset=X] [offset_step=S] [module-only] [code] [type=T]\n"
+     "                                       Buscar cadenas de punteros (con offsets)\n"
      "  pointer results [n]                    Mostrar cadenas del ultimo escaneo\n"
      "  pointer chains [n]                     Alias de 'pointer results'\n"
-     "  pointer add <idx>                      Anadir la base de una cadena a la tabla",
+     "  pointer add <idx>                      Anadir la cadena (PointerChainRef) a la tabla\n"
+     "  pointer resolve <idx>                  Resolver una entrada pointer a su direccion actual",
      cmd_pointer},
     {"help", "help | quit", cmd_help},
     // Alias ocultos en 'help' (misma funcion que el comando principal).

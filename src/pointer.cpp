@@ -132,6 +132,12 @@ std::vector<PointerChain> extend_chains(const std::vector<PointerChain>& frontie
             nc.nodes.reserve(chain.nodes.size() + 1);
             nc.nodes.push_back(s);
             nc.nodes.insert(nc.nodes.end(), chain.nodes.begin(), chain.nodes.end());
+            // El offset de la arista se antepone: se aplica despues del deref
+            // del nuevo head para alcanzar el anterior.
+            nc.offsets.reserve(chain.offsets.size() + 1);
+            nc.offsets.push_back(it->offset);
+            nc.offsets.insert(nc.offsets.end(), chain.offsets.begin(),
+                              chain.offsets.end());
             nc.depth = (int)nc.nodes.size() - 1;
             out.push_back(std::move(nc));
         }
@@ -161,25 +167,42 @@ PointerScanResult pointer_scan(Memory& mem, const std::vector<Region>& regions,
         source = std::move(filtered);
     }
 
-    FlatHashSet current_set(std::vector<uint64_t>{opts.target});
+    std::vector<uint64_t> current_values{opts.target};
+    FlatHashSet current_set(current_values);
+    const uint64_t step = opts.offset_step == 0 ? 1 : opts.offset_step;
 
     std::vector<PointerChain> frontier;
-    frontier.push_back(PointerChain{{opts.target}, 0});
+    frontier.push_back(PointerChain{{opts.target}, {}, 0});
 
     for (int d = 1; d <= opts.max_depth; ++d) {
+        // 0) Conjunto desplazado: { t - o : t in current_values, o en ventana }.
+        //    Permite comprobar una posicion con UNA sola busqueda y ampliar a
+        //    los offsets solo cuando hay coincidencia (evita |posiciones| x
+        //    |ventana| busquedas por nivel).
+        std::vector<uint64_t> shifted_vals;
+        shifted_vals.reserve(current_values.size() *
+                             ((opts.max_offset / step) + 1));
+        for (uint64_t t : current_values)
+            for (uint64_t o = 0; o <= opts.max_offset; o += step)
+                shifted_vals.push_back(t - o);
+        FlatHashSet shifted(std::move(shifted_vals));
+
         // 1) Escanear regiones fuente: posiciones alineadas a 8 bytes cuyo
-        //    valor pertenece a current_set.
+        //    valor V satisface (V + o) in current_set para algun offset o.
         std::vector<PointerEdge> edges;
         bool stopped = false;
         auto cb = [&](const uint8_t* win, uint64_t addr) -> bool {
             uint64_t v;
             std::memcpy(&v, win, sizeof(v));
-            if (current_set.contains(v)) {
-                edges.push_back(PointerEdge{addr, v});
-                if (edges.size() >= opts.max_edges_per_level) {
-                    res.edges_truncated = true;
-                    stopped = true;
-                    return false; // detener todo el recorrido
+            if (!shifted.contains(v)) return true;
+            for (uint64_t o = 0; o <= opts.max_offset; o += step) {
+                if (current_set.contains(v + o)) {
+                    edges.push_back(PointerEdge{addr, v + o, o});
+                    if (edges.size() >= opts.max_edges_per_level) {
+                        res.edges_truncated = true;
+                        stopped = true;
+                        return false; // detener todo el recorrido
+                    }
                 }
             }
             return true;
@@ -189,10 +212,11 @@ PointerScanResult pointer_scan(Memory& mem, const std::vector<Region>& regions,
         res.levels = d;
         res.total_edges += edges.size();
 
-        // 2) Indice por target para la extension de la frontera.
+        // 2) Indice por target (y offset) para la extension de la frontera.
         std::sort(edges.begin(), edges.end(),
                   [](const PointerEdge& a, const PointerEdge& b) {
                       if (a.target != b.target) return a.target < b.target;
+                      if (a.offset != b.offset) return a.offset < b.offset;
                       return a.source < b.source;
                   });
 
@@ -210,6 +234,7 @@ PointerScanResult pointer_scan(Memory& mem, const std::vector<Region>& regions,
         std::vector<uint64_t> srcs;
         srcs.reserve(edges.size());
         for (const PointerEdge& e : edges) srcs.push_back(e.source);
+        current_values = srcs;
         current_set.build(std::move(srcs));
 
         if (stopped) break; // el nivel se trunco: no tiene sentido continuar

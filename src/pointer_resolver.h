@@ -70,4 +70,12 @@ PointerChainRef make_chain_ref(const std::vector<Region>& regions,
                                const std::vector<uint64_t>& nodes,
                                DataType value_type);
 
+// Igual que la anterior pero con los offsets de la cadena V2 (un offset por
+// deref, en el mismo orden que los nodos). Si la cantidad no cuadra con
+// nodes (cadenas V1 sin offsets), se usan offsets a 0.
+PointerChainRef make_chain_ref(const std::vector<Region>& regions,
+                               const std::vector<uint64_t>& nodes,
+                               const std::vector<uint64_t>& offsets,
+                               DataType value_type);
+
 } // namespace mt

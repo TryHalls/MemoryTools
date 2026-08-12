@@ -177,7 +177,7 @@ static void test_flat_hash_set() {
 // ---------------------------------------------------------------------------
 static void test_depth1() {
     // Nivel 1: A -> TARGET
-    std::vector<PointerChain> frontier = {PointerChain{{0x1000}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{0x1000}, {}, 0}};
     std::vector<PointerEdge> edges = {{0x2000, 0x1000}}; // source=A, target=T
     bool trunc = false;
     std::vector<PointerChain> out = extend_chains(frontier, edges, 100, trunc);
@@ -195,7 +195,7 @@ static void test_reconstruct_depth3() {
     const uint64_t T = 0x1000, N1 = 0x2000, N2 = 0x3000, N3 = 0x4000;
     bool trunc = false;
 
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     frontier = extend_chains(frontier, {{N1, T}}, 100, trunc);   // nivel 1
     CHECK_EQ(frontier.size(), (size_t)1);
     CHECK_EQ(frontier[0].depth, 1);
@@ -224,7 +224,7 @@ static void test_shared_nodes_no_global_visited() {
     const uint64_t T = 0x1000, Y = 0x2000, X = 0x3000, Z = 0x4000;
     bool trunc = false;
 
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     frontier = extend_chains(frontier, {{Y, T}}, 100, trunc); // nivel 1
     CHECK_EQ(frontier.size(), (size_t)1);
 
@@ -250,7 +250,7 @@ static void test_cycle_by_path() {
     const uint64_t B = 0x1000, A = 0x2000;
     bool trunc = false;
 
-    std::vector<PointerChain> frontier = {PointerChain{{B}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{B}, {}, 0}};
     frontier = extend_chains(frontier, {{A, B}}, 100, trunc); // nivel 1
     CHECK_EQ(frontier.size(), (size_t)1);
 
@@ -265,7 +265,7 @@ static void test_cycle_mid_chain_keeps_acyclic() {
     const uint64_t T = 0x1000, A = 0x2000, B = 0x3000;
     bool trunc = false;
 
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     frontier = extend_chains(frontier, {{A, T}}, 100, trunc); // nivel 1: [A,T]
     CHECK_EQ(frontier.size(), (size_t)1);
 
@@ -282,7 +282,7 @@ static void test_multiple_refs_same_target() {
     // Dos referentes del mismo TARGET en el mismo nivel.
     const uint64_t T = 0x1000, A = 0x2000, B = 0x3000;
     bool trunc = false;
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     std::vector<PointerEdge> lvl1 = {{A, T}, {B, T}};
     std::vector<PointerChain> d1 = extend_chains(frontier, lvl1, 100, trunc);
     CHECK(!trunc);
@@ -294,7 +294,7 @@ static void test_multiple_refs_same_target() {
 static void test_no_references() {
     // Target sin referencias: ningun edge -> sin cadenas.
     bool trunc = false;
-    std::vector<PointerChain> frontier = {PointerChain{{0x1000}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{0x1000}, {}, 0}};
     std::vector<PointerEdge> empty;
     std::vector<PointerChain> out = extend_chains(frontier, empty, 100, trunc);
     CHECK(!trunc);
@@ -305,7 +305,7 @@ static void test_max_chains_limit() {
     // max_chains = 2 con 3 referentes del TARGET: solo 2 cadenas + flag.
     const uint64_t T = 0x1000;
     bool trunc = false;
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     std::vector<PointerEdge> lvl1 = {{0x2000, T}, {0x3000, T}, {0x4000, T}};
     std::vector<PointerChain> out = extend_chains(frontier, lvl1, 2, trunc);
     CHECK(trunc);
@@ -323,7 +323,7 @@ static void test_edges_not_sorted_input_is_sorted() {
     // ya ordenadas el resultado debe ser deterministico.
     const uint64_t T = 0x1000;
     bool trunc = false;
-    std::vector<PointerChain> frontier = {PointerChain{{T}, 0}};
+    std::vector<PointerChain> frontier = {PointerChain{{T}, {}, 0}};
     std::vector<PointerEdge> lvl1 = {{0x2000, T}, {0x3000, T}};
     std::vector<PointerChain> d1 = extend_chains(frontier, lvl1, 100, trunc);
     CHECK_EQ(d1.size(), (size_t)2);

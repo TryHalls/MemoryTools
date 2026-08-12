@@ -356,28 +356,28 @@ echo "TARGET=$PTARGET"
 echo "NODE1=$NODE1 NODE2=$NODE2 NODE3=$NODE3 CYCLEA=$CYCLEA CYCLEB=$CYCLEB"
 
 echo
-echo "== pointer scan depth=1: espera Node1 -> TARGET =="
-D1=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 1 2>&1 || true)
+echo "== pointer scan depth=1: espera Node1 -> TARGET (max_offset=0 = caso V1) =="
+D1=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 1 0 0 0 2>&1 || true)
 contains D1 "$NODE1 $PTARGET" || { echo "$D1"; fail "depth=1 no encuentra Node1->TARGET"; }
 echo "OK: depth=1 encuentra Node1->TARGET"
 
 echo
 echo "== pointer scan depth=2: espera Node2 -> Node1 -> TARGET =="
-D2=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 2 2>&1 || true)
+D2=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 2 0 0 0 2>&1 || true)
 contains D2 "$NODE2 $NODE1 $PTARGET" \
     || { echo "$D2"; fail "depth=2 no reconstruye Node2->Node1->TARGET"; }
 echo "OK: depth=2 reconstruye Node2->Node1->TARGET"
 
 echo
 echo "== pointer scan depth=3: espera Node3 -> Node2 -> Node1 -> TARGET =="
-D3=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 2>&1 || true)
+D3=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 0 0 0 2>&1 || true)
 contains D3 "$NODE3 $NODE2 $NODE1 $PTARGET" \
     || { echo "$D3"; fail "depth=3 no reconstruye la cadena completa"; }
 echo "OK: depth=3 reconstruye Node3->Node2->Node1->TARGET"
 
 echo
 echo "== ciclo controlado (TARGET=CycleB): sin cuelgues y sin cadenas ciclicas =="
-DC=$(timeout 30 "$PDRV" "$PTPID" "$CYCLEB" 3 2>&1 || true)
+DC=$(timeout 30 "$PDRV" "$PTPID" "$CYCLEB" 3 0 0 0 2>&1 || true)
 contains DC "$CYCLEA $CYCLEB" \
     || { echo "$DC"; fail "el ciclo no se detecto (esperaba CycleA->CycleB)"; }
 # El ciclo B->A->B se descarta por el control por cadena: ninguna cadena debe
@@ -394,7 +394,7 @@ echo "OK: ciclo controlado (termina sin colgarse; B->A->B descartada)"
 
 echo
 echo "== truncado por max_edges_per_level =="
-DT=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 1 2>&1 || true)
+DT=$(timeout 30 "$PDRV" "$PTPID" "$PTARGET" 3 1 0 0 2>&1 || true)
 contains DT 'edges_truncated=1' \
     || { echo "$DT"; fail "max_edges=1 no marco edges_truncated"; }
 contains DT "$NODE1 $PTARGET" \
@@ -437,8 +437,8 @@ wait_out2 'depth debe estar entre 1 y 7' || fail "depth=0 no validado"
 feed2 "pointer scan $PTARGET depth=8"
 wait_out2 'depth debe estar entre 1 y 7' || fail "depth=8 no validado"
 
-echo "-- depth=1: resumen + results con Node1"
-feed2 "pointer scan $PTARGET depth=1"
+echo "-- depth=1: resumen + results con Node1 (max_offset=0 = caso V1)"
+feed2 "pointer scan $PTARGET depth=1 max_offset=0"
 wait_out2 'Pointer Scan:' || fail "pointer scan depth=1 no respondio"
 sleep 0.5
 BLOCKP1=$(tail -n 8 "$OUT2")
@@ -450,7 +450,7 @@ BLOCKR1=$(tail -n 30 "$OUT2")
 contains BLOCKR1 "$NODE1" || { echo "$BLOCKR1"; fail "depth=1 no muestra Node1"; }
 
 echo "-- depth=2: reconstruye Node2 -> Node1 -> TARGET"
-feed2 "pointer scan $PTARGET depth=2"
+feed2 "pointer scan $PTARGET depth=2 max_offset=0"
 wait_out2 'Pointer Scan:' || fail "pointer scan depth=2 no respondio"
 feed2 'pointer results'
 wait_out2 'depth 2:' || fail "pointer results (depth=2) no llego"
@@ -460,7 +460,7 @@ contains BLOCKR2 "$NODE2 -> $NODE1" \
     || { echo "$BLOCKR2"; fail "depth=2 no reconstruye Node2->Node1"; }
 
 echo "-- depth=3: reconstruye Node3 -> Node2 -> Node1 -> TARGET"
-feed2 "pointer scan $PTARGET depth=3"
+feed2 "pointer scan $PTARGET depth=3 max_offset=0"
 wait_out2 'Pointer Scan:' || fail "pointer scan depth=3 no respondio"
 feed2 'pointer results'
 wait_out2 'depth 3:' || fail "pointer results (depth=3) no llego"
@@ -486,7 +486,7 @@ echo "-- persistencia: save / clear / load de la entrada pointer"
 TF2=$(mktemp)
 feed2 "table save $TF2"
 wait_out2 'guardada' || fail "table save (pointer) no respondio"
-grep -q 'pointer 1 "' "$TF2" || { echo "FALLO: archivo de tabla pointer incorrecto:"; cat "$TF2"; exit 1; }
+grep -q '^pointer type=' "$TF2" || { echo "FALLO: archivo de tabla pointer incorrecto:"; cat "$TF2"; exit 1; }
 feed2 'table clear'
 wait_out2 'vaciada' || fail "table clear no respondio"
 feed2 "table load $TF2"
@@ -513,16 +513,14 @@ rm -f "$PT"
 PT=""
 
 echo
-echo "== POINTER V2: resolucion de cadenas con offsets frente a ASLR =="
+echo "== POINTER V2 CLI: scan con offsets / add / resolve / tabla dinamica / ASLR =="
 P2BIN=build/pointer_offset_test
-P2DRV=build/pointer_resolve_driver
-if [ ! -x "$P2BIN" ] || [ ! -x "$P2DRV" ]; then
-    echo "FALLO: faltan build/pointer_offset_test o build/pointer_resolve_driver (ejecuta ./build.sh)"
+if [ ! -x "$P2BIN" ]; then
+    echo "FALLO: falta build/pointer_offset_test (ejecuta ./build.sh)"
     exit 1
 fi
 
-# --- intento 1: construir la cadena (module+offset, steps 0x20,0x18), guardar
-# la tabla y resolverla contra el proceso recien lanzado --------------------
+# --- intento 1: proceso vivo --------------------------------------------------
 PTF=$(mktemp)
 ( sleep 60 ) | "$P2BIN" > "$PTF" 2>&1 &
 PT2_PID=$!
@@ -540,15 +538,104 @@ PTGT1=$(grep -m1 '^TARGET:' "$PTF" | grep -o '0x[0-9a-f]*' || true)
     || fail "faltan datos de pointer_offset_test (intento 1)"
 echo "run1: module=$P2MOD root_off=$P2ROOTOFF target=$PTGT1"
 
-TF3=$(mktemp)
-R1=$(timeout 30 "$P2DRV" save "$P2PID" "$TF3" "$P2MOD" "$P2ROOTOFF" "0x20,0x18" i32 "cadena v2" 2>&1 || true)
-contains R1 "RESOLVED=$PTGT1" || { echo "$R1"; fail "la cadena no resuelve al target del proceso 1"; }
-contains R1 "VALUE=4242" || { echo "$R1"; fail "el valor final no es 4242 (intento 1)"; }
-grep -q '^pointer type=int32 ' "$TF3" || { echo "FALLO: linea v2 incorrecta en el archivo:"; cat "$TF3"; exit 1; }
-grep -q 'steps=0x20,0x18' "$TF3" || { echo "FALLO: faltan steps en la linea v2:"; cat "$TF3"; exit 1; }
-echo "OK: intento 1 -> target=$PTGT1, value=4242; tabla guardada (v2)"
+FIFO3=$(mktemp -u)
+OUT3=$(mktemp)
+rm -f "$FIFO3"
+mkfifo "$FIFO3"
+"$BIN" "$P2PID" < "$FIFO3" > "$OUT3" 2>&1 &
+MT3_PID=$!
+exec 5>"$FIFO3"
+feed3() { printf '%s\n' "$@" >&5; }
+wait_out3() {
+    local pat="$1" tries="${2:-40}"
+    for _ in $(seq 1 "$tries"); do
+        grep -q "$pat" "$OUT3" && return 0
+        sleep 0.3
+    done
+    return 1
+}
+wait_out3 'mt(' || fail "la sesion pointer V2 no arranco"
 
-# --- reiniciar el proceso (nuevo layout de ASLR) y resolver la MISMA cadena --
+echo "-- validacion de opciones (offset_step=0, max_offset excesivo, desconocida, depth=0)"
+feed3 "pointer scan $PTGT1 offset_step=0"
+wait_out3 'offset_step debe ser mayor que 0' || fail "offset_step=0 no validado"
+feed3 "pointer scan $PTGT1 max_offset=0x20000"
+wait_out3 'max_offset invalido (maximo 0x10000)' || fail "max_offset excesivo no validado"
+feed3 "pointer scan $PTGT1 foo=1"
+wait_out3 'Opcion desconocida: foo=1' || fail "opcion desconocida no validada"
+feed3 "pointer scan $PTGT1 depth=0"
+wait_out3 'depth debe estar entre 1 y 7' || fail "depth=0 no validado"
+
+echo "-- pointer scan con offsets (por defecto max_offset=0x100 step=0x8)"
+feed3 "pointer scan $PTGT1"
+wait_out3 'Pointer Scan:' || fail "pointer scan V2 no respondio"
+sleep 0.5
+BLOCKV=$(tail -n 10 "$OUT3")
+contains BLOCKV 'offsets: 0x0..0x100 (step 0x8)' \
+    || { echo "$BLOCKV"; fail "el resumen no muestra la ventana de offsets"; }
+
+echo "-- pointer results: cadena con offsets +0x20 -> +0x18 y raiz MODULE"
+feed3 'pointer results 500'
+wait_out3 'depth 2:' || fail "pointer results V2 no llego"
+sleep 0.5
+grep -q '\[root MODULE' "$OUT3" || { echo "FALLO: no hay cadenas con raiz de modulo:"; tail -n 40 "$OUT3"; exit 1; }
+grep -q '+0x20' "$OUT3" || { echo "FALLO: la cadena no muestra +0x20:"; tail -n 40 "$OUT3"; exit 1; }
+grep -q '+0x18' "$OUT3" || { echo "FALLO: la cadena no muestra +0x18:"; tail -n 40 "$OUT3"; exit 1; }
+grep -q 'persistente' "$OUT3" || fail "no marca la raiz como persistente"
+# Indice de la cadena con offsets +0x20 -> +0x18 y raiz de modulo (la
+# cadena deliberada de pointer_offset_test: &g_a -> +0x20 -> next -> +0x18
+# -> value). La pila genera cadenas ABSOLUTE adicionales con la ventana
+# ancha; se busca la primera cuya linea raiz sea [root MODULE y cuya linea
+# de cadena contenga +0x20 y +0x18.
+FIRST_MOD=$(awk '
+  /^\[[0-9]+\] depth/ { i=$0; sub(/^\[/,"",i); sub(/\].*/,"",i); next }
+  /\[root MODULE/ { root_ok=1; next }
+  /\-> \+0x20 ->/ && /\+0x18 ->/ && root_ok { print i; exit }
+  { root_ok=0 }
+' "$OUT3")
+[ -n "$FIRST_MOD" ] || fail "no se pudo localizar la cadena MODULE con +0x20/+0x18"
+echo "OK: results V2 muestra root MODULE y offsets +0x20/+0x18 (cadena MODULE=$FIRST_MOD)"
+
+echo "-- pointer add $FIRST_MOD (raiz MODULE, persistente)"
+feed3 "pointer add $FIRST_MOD"
+wait_out3 'anadida desde la cadena' || fail "pointer add (V2) no respondio"
+sleep 0.5
+BLOCKV3=$(tail -n 8 "$OUT3")
+contains BLOCKV3 'pointer[module]' || { echo "$BLOCKV3"; fail "la entrada no es pointer[module]"; }
+contains BLOCKV3 'persistente' || { echo "$BLOCKV3"; fail "no marca persistente"; }
+
+echo "-- pointer resolve 0: direccion actual + valor"
+feed3 'pointer resolve 0'
+wait_out3 'Entrada 0 resuelta:' || fail "pointer resolve 0 no respondio"
+sleep 0.5
+BLOCKV4=$(tail -n 6 "$OUT3")
+contains BLOCKV4 '= 4242' || { echo "$BLOCKV4"; fail "pointer resolve no muestra el valor 4242"; }
+
+echo "-- table read 0 (dinamico)"
+feed3 'table read 0'
+wait_out3 '\[0\] 0x' || fail "table read 0 (dinamico) no respondio"
+sleep 0.5
+BLOCKV5=$(tail -n 6 "$OUT3")
+contains BLOCKV5 '= 4242' || { echo "$BLOCKV5"; fail "table read dinamico no lee 4242"; }
+
+echo "-- table set 0 9001: escribe en la direccion resuelta"
+feed3 'table set 0 9001'
+wait_out3 '(verificado)' || fail "table set 0 9001 no verifico la escritura"
+VOK=0
+for _ in $(seq 1 30); do
+    grep -q 'value=9001' "$PTF" && { VOK=1; break; }
+    sleep 0.3
+done
+[ "$VOK" = 1 ] || fail "el proceso 1 no refleja el valor 9001"
+
+echo "-- table save (formato v2: type=int32, module, steps=0x18)"
+TF4=$(mktemp)
+feed3 "table save $TF4"
+wait_out3 'guardada' || fail "table save (V2) no respondio"
+grep -q '^pointer type=int32 module=' "$TF4" || { echo "FALLO: linea v2 incorrecta:"; cat "$TF4"; exit 1; }
+grep -q 'steps=0x20,0x18' "$TF4" || { echo "FALLO: faltan los steps +0x20,+0x18 en la linea v2:"; cat "$TF4"; exit 1; }
+
+echo "-- reiniciar el proceso (nuevo layout de ASLR) y resolver la MISMA cadena"
 kill "$PT2_PID" 2>/dev/null || true
 PT2_PID=""
 sleep 0.5
@@ -566,20 +653,63 @@ PTGT2=$(grep -m1 '^TARGET:' "$PTF2" | grep -o '0x[0-9a-f]*' || true)
 [ -n "$PTGT2" ] || fail "faltan datos de pointer_offset_test (intento 2)"
 echo "run2: target=$PTGT2"
 
-R2=$(timeout 30 "$P2DRV" resolve "$P2PID2" "$TF3" 2>&1 || true)
-contains R2 "RESOLVED=$PTGT2" || { echo "$R2"; fail "la cadena guardada no resuelve al target del proceso 2"; }
-contains R2 "VALUE=4242" || { echo "$R2"; fail "el valor final no es 4242 (intento 2)"; }
+echo "-- attach al proceso 2, cargar la tabla y table read 0"
+feed3 "attach $P2PID2"
+wait_out3 'Proceso objetivo:' || fail "attach al proceso 2 no respondio"
+feed3 "table load $TF4"
+wait_out3 'cargada' || fail "table load (V2) no respondio"
+feed3 'table read 0'
+wait_out3 '\[0\] 0x' || fail "table read 0 (proceso 2) no respondio"
+sleep 0.5
+BLOCKV6=$(tail -n 8 "$OUT3")
+contains BLOCKV6 "0x${PTGT2#0x}" || { echo "$BLOCKV6"; fail "la direccion resuelta no es el target del proceso 2 ($PTGT2)"; }
+contains BLOCKV6 '= 4242' || { echo "$BLOCKV6"; fail "el valor en el proceso 2 no es 4242"; }
 if [ "$PTGT2" != "$PTGT1" ]; then
-    echo "OK: se resolvio una direccion NUEVA (ASLR): $PTGT1 -> $PTGT2, valor correcto"
+    echo "OK: ASLR - direccion NUEVA ($PTGT1 -> $PTGT2) con el mismo valor"
 else
-    echo "NOTA: el layout no cambio entre procesos (entorno sin ASLR); la resolucion sigue siendo correcta"
+    echo "NOTA: el layout no cambio entre procesos (entorno sin ASLR); resolucion correcta"
 fi
 
+echo "-- table set 0 1234 en el proceso 2"
+feed3 'table set 0 1234'
+wait_out3 '(verificado)' || fail "table set 0 1234 (proceso 2) no verifico"
+VOK=0
+for _ in $(seq 1 30); do
+    grep -q 'value=1234' "$PTF2" && { VOK=1; break; }
+    sleep 0.3
+done
+[ "$VOK" = 1 ] || fail "el proceso 2 no refleja el valor 1234"
+echo "OK: la entrada pointer sobrevive al ASLR (resolve/read/set en proceso nuevo)"
+
+echo "-- errores del resolver: modulo inexistente y offset fuera del modulo"
+sed "s|module=$P2MOD|module=/no/existe|g" "$TF4" > "$TF4.badmod"
+feed3 'table clear'
+wait_out3 'vaciada' || fail "table clear no respondio"
+feed3 "table load $TF4.badmod"
+wait_out3 "desde $TF4.badmod" || fail "table load (module malo) no respondio"
+feed3 'pointer resolve 0'
+wait_out3 'modulo no encontrado' || fail "module inexistente no da error explicito"
+sed 's/root=0x[0-9a-f]*/root=0x7ffff0000000/' "$TF4" > "$TF4.badroot"
+feed3 'table clear'
+wait_out3 'vaciada' || fail "table clear (2) no respondio"
+feed3 "table load $TF4.badroot"
+wait_out3 "desde $TF4.badroot" || fail "table load (root malo) no respondio"
+feed3 'pointer resolve 0'
+wait_out3 'offset fuera del modulo' || fail "offset fuera del modulo no da error explicito"
+
+echo "-- pointer resolve 99: indice invalido"
+feed3 'pointer resolve 99'
+wait_out3 'No existe la entrada 99' || fail "pointer resolve con indice invalido no avisa"
+
+feed3 'quit'
+sleep 0.5
+exec 5>&-
+MT3_PID=""
+rm -f "$FIFO3" "$OUT3" "$TF4" "$TF4.badmod" "$TF4.badroot" "$PTF" "$PTF2"
+FIFO3=""; OUT3=""; TF4=""; PTF=""; PTF2=""
 kill "$PT2_PID" 2>/dev/null || true
 PT2_PID=""
-rm -f "$PTF" "$PTF2" "$TF3"
-PTF=""; PTF2=""; TF3=""
-echo "OK: Pointer V2 (cadena con offsets resuelta frente a ASLR)"
+echo "OK: Pointer V2 CLI completo (scan offsets / add / resolve / tabla dinamica / ASLR / errores)"
 
 feed 'quit'
 sleep 0.5

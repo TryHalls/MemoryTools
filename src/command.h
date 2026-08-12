@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "types.h"
+
 namespace mt {
 
 class Session;
@@ -58,24 +60,36 @@ void print_maps(int pid);
 // Pointer Scanner (CLI): helpers puros expuestos para poder testear el
 // parsing y el formateo sin depender de un proceso real.
 
-// Argumentos ya validados de 'pointer scan <dir> [depth=N] [code]'. Si
-// 'error' no esta vacio los argumentos son invalidos (direccion o opcion
-// desconocida, depth fuera de 1..7) y el resto de campos no es fiable.
+// Argumentos ya validados de 'pointer scan <dir> [depth=N] [max_offset=X]
+// [offset_step=S] [module-only] [code] [type=T]'. Si 'error' no esta vacio
+// los argumentos son invalidos y el resto de campos no es fiable.
 struct PointerScanArgs {
     uint64_t target = 0;
-    int depth = 3;          // valor por defecto
+    int depth = 3;              // 1..7
+    uint64_t max_offset = 0x100; // ventana de offsets (0 incluido; max 0x10000)
+    uint64_t offset_step = 8;    // > 0
     bool include_code = false;
-    std::string error;      // vacio = valido
+    bool module_only = false;    // solo cadenas con raiz de modulo
+    std::optional<DataType> value_type; // type=T (por defecto: tipo de sesion)
+    std::string error;           // vacio = valido
 };
 
 // Parsea y valida los argumentos de 'pointer scan'. La direccion se acepta
 // en hex (0x...) o decimal (misma regla que 'view'/'set'). 'code' activa
-// include_code; 'depth=N' con N en 1..7.
+// include_code; 'module-only' filtra cadenas cuya raiz no es de modulo;
+// 'depth=N' con N en 1..7; 'max_offset=X' y 'offset_step=S' configuran la
+// ventana de offsets; 'type=T' fija el tipo del valor final.
 PointerScanArgs parse_pointer_scan_args(const CommandArgs& args);
 
 // Representacion textual de una cadena: "0xA -> 0xB -> ... -> TARGET" (el
 // ultimo nodo es el target del escaneo). La usa 'pointer results' y tambien
 // la descripcion de la entrada de la tabla creada por 'pointer add'.
 std::string pointer_chain_description(const std::vector<uint64_t>& nodes);
+
+// Igual que la anterior pero intercalando los offsets de la cadena V2:
+// "0xA -> +0x20 -> 0xB -> +0x18 -> TARGET". Si offsets.size() no cuadra con
+// nodes (cadenas V1), se comporta como la version sin offsets.
+std::string pointer_chain_description(const std::vector<uint64_t>& nodes,
+                                      const std::vector<uint64_t>& offsets);
 
 } // namespace mt

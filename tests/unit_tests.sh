@@ -25,6 +25,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/test_pointer_cmd.cpp \
     src/command.cpp src/session.cpp src/scanner.cpp src/memory.cpp \
     src/pattern.cpp src/process.cpp src/address_table.cpp src/pointer.cpp \
+    src/pointer_resolver.cpp \
     -o build/test_pointer_cmd
 
 g++ -std=c++17 -O2 -Wall -Wextra -I src \

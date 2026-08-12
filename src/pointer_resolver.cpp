@@ -103,12 +103,23 @@ ResolveResult resolve_chain(const PointerChainRef& chain, Memory& mem,
 PointerChainRef make_chain_ref(const std::vector<Region>& regions,
                                const std::vector<uint64_t>& nodes,
                                DataType value_type) {
+    return make_chain_ref(regions, nodes, std::vector<uint64_t>{}, value_type);
+}
+
+PointerChainRef make_chain_ref(const std::vector<Region>& regions,
+                               const std::vector<uint64_t>& nodes,
+                               const std::vector<uint64_t>& offsets,
+                               DataType value_type) {
     PointerChainRef ref;
     ref.value_type = value_type;
     if (nodes.empty()) return ref;
     ref.root = make_base_from_address(regions, nodes[0]);
     const size_t depth = nodes.size() - 1; // derefs; nodes.back() es el target
-    ref.offsets.assign(depth, 0);
+    if (offsets.size() == depth) {
+        ref.offsets = offsets;
+    } else {
+        ref.offsets.assign(depth, 0); // V1 / datos incompletos
+    }
     return ref;
 }
 

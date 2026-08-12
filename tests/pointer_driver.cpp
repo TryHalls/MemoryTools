@@ -5,7 +5,12 @@
 // ejecuta el escaneo con las opciones dadas y vuelca el resultado en texto
 // plano (resumen + una linea por cadena), con direcciones en 0x%016llx.
 //
-// Uso: pointer_driver <pid> <target_hex> [depth] [max_edges] [max_chains]
+// Uso: pointer_driver <pid> <target_hex> [depth] [max_edges] [max_chains] [max_offset]
+//
+// max_edges/max_chains = 0 significa "por defecto" (500000/100000);
+// max_offset = 0 fuerza el caso V1 (ventana de offsets {0}) y es el valor
+// que usa el bloque determinista de la E2E. Sin el argumento, se usa el
+// max_offset por defecto del motor (0x100).
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -19,7 +24,7 @@ using namespace mt;
 int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr,
-                "uso: pointer_driver <pid> <target_hex> [depth] [max_edges] [max_chains]\n");
+                "uso: pointer_driver <pid> <target_hex> [depth] [max_edges] [max_chains] [max_offset]\n");
         return 2;
     }
     const int pid = atoi(argv[1]);
@@ -28,8 +33,9 @@ int main(int argc, char** argv) {
     PointerScanOptions opts;
     opts.target = target;
     if (argc > 3) opts.max_depth = atoi(argv[3]);
-    if (argc > 4) opts.max_edges_per_level = (size_t)atoll(argv[4]);
-    if (argc > 5) opts.max_chains = (size_t)atoll(argv[5]);
+    if (argc > 4) { long v = atoll(argv[4]); if (v > 0) opts.max_edges_per_level = (size_t)v; }
+    if (argc > 5) { long v = atoll(argv[5]); if (v > 0) opts.max_chains = (size_t)v; }
+    if (argc > 6) opts.max_offset = strtoull(argv[6], nullptr, 0);
 
     Memory mem;
     std::string err;

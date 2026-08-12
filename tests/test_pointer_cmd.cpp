@@ -156,6 +156,70 @@ static void test_parse_pointer_scan_args() {
     CHECK(!a.error.empty());
     a = parse_pointer_scan_args({"zzz"});
     CHECK(!a.error.empty());
+
+    // FASE 4: ventana de offsets, module-only y tipo
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0x40"});
+    CHECK(a.error.empty());
+    CHECK_BITS(a.max_offset, 0x40);
+    CHECK_BITS(a.offset_step, 8); // por defecto
+    a = parse_pointer_scan_args({"0x1234", "max_offset=64"});
+    CHECK(a.error.empty());
+    CHECK_BITS(a.max_offset, 64); // decimal aceptado
+    a = parse_pointer_scan_args({"0x1234", "offset_step=4"});
+    CHECK(a.error.empty());
+    CHECK_BITS(a.offset_step, 4);
+
+    // offset_step = 0 -> error
+    a = parse_pointer_scan_args({"0x1234", "offset_step=0"});
+    CHECK(!a.error.empty());
+    CHECK(a.error.find("offset_step") != std::string::npos);
+    // offset_step no numerico -> error
+    a = parse_pointer_scan_args({"0x1234", "offset_step=abc"});
+    CHECK(!a.error.empty());
+
+    // max_offset demasiado grande (cap 0x10000) -> error
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0x100000"});
+    CHECK(!a.error.empty());
+    CHECK(a.error.find("max_offset") != std::string::npos);
+
+    // max_offset menor que offset_step: permitido (ventana = {0})
+    a = parse_pointer_scan_args({"0x1234", "max_offset=4", "offset_step=8"});
+    CHECK(a.error.empty());
+    CHECK_BITS(a.max_offset, 4);
+    CHECK_BITS(a.offset_step, 8);
+
+    // module-only
+    a = parse_pointer_scan_args({"0x1234", "module-only"});
+    CHECK(a.error.empty());
+    CHECK(a.module_only);
+    a = parse_pointer_scan_args({"0x1234", "module-only", "code", "depth=5"});
+    CHECK(a.error.empty());
+    CHECK(a.module_only);
+    CHECK(a.include_code);
+    CHECK_EQ(a.depth, 5);
+
+    // type= valido (e invalido: 'pointer' no es un tipo de valor final)
+    a = parse_pointer_scan_args({"0x1234", "type=int32"});
+    CHECK(a.error.empty());
+    CHECK(a.value_type.has_value());
+    CHECK(a.value_type.value() == DataType::I32);
+    a = parse_pointer_scan_args({"0x1234", "type=float"});
+    CHECK(a.error.empty());
+    CHECK(a.value_type.value() == DataType::F32);
+    a = parse_pointer_scan_args({"0x1234", "type=pointer"});
+    CHECK(!a.error.empty());
+
+    // combinacion completa
+    a = parse_pointer_scan_args({"0x1234", "depth=4", "max_offset=0x80",
+                                 "offset_step=4", "module-only", "code",
+                                 "type=u64"});
+    CHECK(a.error.empty());
+    CHECK_EQ(a.depth, 4);
+    CHECK_BITS(a.max_offset, 0x80);
+    CHECK_BITS(a.offset_step, 4);
+    CHECK(a.module_only);
+    CHECK(a.include_code);
+    CHECK(a.value_type.value() == DataType::U64);
 }
 
 // --- Descripcion textual de una cadena -------------------------------------
@@ -166,6 +230,19 @@ static void test_pointer_chain_description() {
     CHECK_STR(pointer_chain_description({0xABC}),
               "0x0000000000000abc");
     CHECK_STR(pointer_chain_description({}), "");
+
+    // version con offsets: intercala +0x... (solo no nulos)
+    CHECK_STR(pointer_chain_description({0x1, 0x2, 0x3}, {0x20, 0x18}),
+              "0x0000000000000001 -> +0x20 -> 0x0000000000000002 -> +0x18 -> "
+              "0x0000000000000003");
+    // offsets a 0 se ocultan (comportamiento V1)
+    CHECK_STR(pointer_chain_description({0x1, 0x2, 0x3}, {0, 0}),
+              "0x0000000000000001 -> 0x0000000000000002 -> 0x0000000000000003");
+    // cantidad de offsets que no cuadra -> version basica
+    CHECK_STR(pointer_chain_description({0x1, 0x2, 0x3}, {0x20}),
+              "0x0000000000000001 -> 0x0000000000000002 -> 0x0000000000000003");
+    // depth 0: sin offsets
+    CHECK_STR(pointer_chain_description({0xABC}, {}), "0x0000000000000abc");
 }
 
 // --- Tipo 'pointer' (DataType::PTR) en el sistema de tipos ------------------
@@ -255,17 +332,112 @@ static void test_pointer_commands() {
     out = capture_execute("pointer add 99", s);
     CHECK(out.find("fuera de rango") != std::string::npos);
 
-    // pointer add 0: crea la entrada con type 'pointer' y la cadena completa
+    // pointer add 0 (V2): crea una cadena dinamica. Sin proceso -> raiz
+    // ABSOLUTE (no persistente); value_type por defecto = I32.
     out = capture_execute("pointer add 0", s);
     CHECK(out.find("anadida desde la cadena 0") != std::string::npos);
-    CHECK(out.find("0x0000000000000010 (pointer)") != std::string::npos);
+    CHECK(out.find("pointer[abs]") != std::string::npos);
+    CHECK(out.find("no persistente") != std::string::npos);
     CHECK_EQ(s.table().size(), 1);
     const AddressEntry* e = s.table().get(0);
     CHECK(e != nullptr);
-    CHECK_BITS(e->address, 0x10); // nodes[0] = base de la cadena
-    CHECK(e->type == DataType::PTR);
+    CHECK(e->ptr.has_value());
+    CHECK_BITS(e->ptr->root.address, 0x10); // nodes[0] = base de la cadena
+    CHECK(e->ptr->root.kind == PointerBaseKind::ABSOLUTE);
+    CHECK(e->type == DataType::I32); // value_type, NO 'pointer'
+    CHECK(e->ptr->value_type == DataType::I32);
     CHECK_STR(e->description,
               "0x0000000000000010 -> 0x0000000000000020 -> 0x0000000000004242");
+}
+
+// --- FASE 4: pointer add con offsets, resolve y table dinamica ---------------
+
+static void test_pointer_add_v2_offsets() {
+    Session s;
+    PointerScanResult r;
+    r.target = 0x4242;
+    r.value_type = DataType::I32;
+    PointerChain c;
+    c.nodes = {0x10, 0x20, 0x30, 0x4242}; // depth 3
+    c.offsets = {0x20, 0x18, 0x8};        // raiz -> +0x20 -> +0x18 -> +0x8
+    c.depth = 3;
+    r.chains.push_back(c);
+    s.set_pointer_result(std::move(r));
+
+    std::string out = capture_execute("pointer results 1", s);
+    CHECK(out.find("[0] depth 3:") != std::string::npos);
+    CHECK(out.find("[root ABSOLUTE 0x0000000000000010]") != std::string::npos);
+    CHECK(out.find("+0x20") != std::string::npos);
+    CHECK(out.find("+0x18") != std::string::npos);
+    // la descripcion intercala offsets no nulos: A -> +0x20 -> B -> +0x18 -> ...
+    CHECK(out.find("0x0000000000000010 -> +0x20 -> 0x0000000000000020 -> +0x18 -> "
+                   "0x0000000000000030 -> +0x8 -> 0x0000000000004242") !=
+          std::string::npos);
+
+    out = capture_execute("pointer add 0", s);
+    CHECK(out.find("pointer[abs]") != std::string::npos);
+    CHECK(out.find("tipo: int32") != std::string::npos);
+    const AddressEntry* e = s.table().get(0);
+    CHECK(e != nullptr);
+    CHECK(e->ptr.has_value());
+    CHECK_EQ(e->ptr->offsets.size(), 3);
+    CHECK_BITS(e->ptr->offsets[0], 0x20);
+    CHECK_BITS(e->ptr->offsets[1], 0x18);
+    CHECK_BITS(e->ptr->offsets[2], 0x8);
+    CHECK(e->ptr->value_type == DataType::I32);
+}
+
+static void test_pointer_resolve_errors() {
+    Session s;
+    PointerScanResult r;
+    r.target = 0x4242;
+    PointerChain c;
+    c.nodes = {0x10, 0x4242};
+    c.offsets = {0};
+    c.depth = 1;
+    r.chains.push_back(c);
+    s.set_pointer_result(std::move(r));
+
+    // anadir la cadena (entrada 0) y una absoluta (entrada 1)
+    capture_execute("pointer add 0", s);
+    s.table().add(0x1000, DataType::I32, "absoluta");
+
+    // sin proceso objetivo: la entrada 0 existe pero no hay proceso
+    std::string out = capture_execute("pointer resolve 0", s);
+    CHECK(out.find("Primero selecciona un proceso") != std::string::npos);
+
+    // entrada que no es cadena dinamica
+    out = capture_execute("pointer resolve 1", s);
+    CHECK(out.find("no es una cadena dinamica") != std::string::npos);
+
+    // indice inexistente
+    out = capture_execute("pointer resolve 5", s);
+    CHECK(out.find("No existe la entrada 5") != std::string::npos);
+}
+
+static void test_table_dynamic_errors() {
+    Session s;
+    // table read / set sin proceso -> piden proceso
+    std::string out = capture_execute("table read 0", s);
+    CHECK(out.find("Primero selecciona un proceso") != std::string::npos);
+    out = capture_execute("table set 0 10", s);
+    CHECK(out.find("Primero selecciona un proceso") != std::string::npos);
+
+    // entrada pointer no persistente en una tabla con proceso falso no es
+    // posible sin proceso real; aqui solo se verifica el marcado ABSOLUTE.
+    PointerScanResult r;
+    r.target = 0x4242;
+    PointerChain c;
+    c.nodes = {0x10, 0x4242};
+    c.offsets = {0};
+    c.depth = 1;
+    r.chains.push_back(c);
+    s.set_pointer_result(std::move(r));
+    capture_execute("pointer add 0", s);
+    const AddressEntry* e = s.table().get(0);
+    CHECK(e != nullptr);
+    CHECK(e->ptr.has_value());
+    CHECK(e->ptr->root.kind == PointerBaseKind::ABSOLUTE); // no persistente
 }
 
 // --- Persistencia del tipo 'pointer' en el formato de tabla v1 --------------
@@ -296,6 +468,9 @@ int main() {
     test_ptr_type();
     test_session_pointer_result();
     test_pointer_commands();
+    test_pointer_add_v2_offsets();
+    test_pointer_resolve_errors();
+    test_table_dynamic_errors();
     test_ptr_save_load();
 
     std::printf("\n== test_pointer_cmd: %d checks, %d fallos ==\n", g_pass, g_fail);

@@ -57,19 +57,29 @@ struct PointerScanOptions {
     bool include_code = false;
     uint64_t min_addr = 0;               // 0 = sin limite
     uint64_t max_addr = 0;               // 0 = sin limite
+    // Ventana de offsets (V2): al leer un puntero V en 'source', se
+    // comprueba (V + o) para cada o = 0, offset_step, ... <= max_offset.
+    // offset 0 siempre incluido (V1 es el caso de ventana {0}).
+    uint64_t max_offset = 0x100;
+    uint64_t offset_step = 8;
 };
 
-// Una arista: la direccion source contiene un puntero (valor de 8 bytes) a
-// target. Es la relacion que permite reconstruir las cadenas sin rescanear.
+// Una arista: en la direccion source hay un puntero (valor de 8 bytes) V
+// tal que V + offset == target. Es la relacion que permite reconstruir las
+// cadenas sin rescanear (source --offset--> target).
 struct PointerEdge {
     uint64_t source = 0;
     uint64_t target = 0;
+    uint64_t offset = 0; // V2: mem[source] + offset == target (0 en V1)
 };
 
 // Una cadena completa [root ... TARGET]; nodes.back() == target del scan.
-// depth = numero de derefs = nodes.size() - 1.
+// depth = numero de derefs = nodes.size() - 1. offsets tiene el mismo
+// tamano que depth: offsets[i] es el offset aplicado DESPUES del deref de
+// nodes[i] para alcanzar nodes[i+1] (el ultimo localiza el valor final).
 struct PointerChain {
     std::vector<uint64_t> nodes;
+    std::vector<uint64_t> offsets; // V2 (vacio en cadenas V1)
     int depth = 0;
 };
 
@@ -80,6 +90,7 @@ struct PointerScanResult {
     bool chains_truncated = false; // se alcanzo max_chains
     int levels = 0;                // niveles completados con resultados
     size_t total_edges = 0;        // aristas encontradas en total
+    DataType value_type = DataType::I32; // tipo del valor final (para add)
 };
 
 // ---------------------------------------------------------------------------
@@ -145,9 +156,10 @@ private:
 
 // Extiende la frontera con las aristas de un nivel (deben venir ordenadas
 // por target): para cada cadena cuyo head (nodes[0]) es el target de alguna
-// arista, crea [source] + chain. Descarta un source ya presente en esa misma
-// cadena (control de ciclos por cadena). Rellena chains_truncated si se
-// alcanza max_chains. Funcion pura: no toca memoria.
+// arista, crea [source] + chain, anteponiendo tambien el offset de la
+// arista a los offsets de la cadena. Descarta un source ya presente en esa
+// misma cadena (control de ciclos por cadena, sin visited global). Rellena
+// chains_truncated si se alcanza max_chains. Funcion pura: no toca memoria.
 std::vector<PointerChain> extend_chains(const std::vector<PointerChain>& frontier,
                                         const std::vector<PointerEdge>& edges_sorted,
                                         size_t max_chains, bool& chains_truncated);

@@ -35,7 +35,7 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
 | Address Table (`table`, persistente) | ✅ (ETAPA 16, primera versión) |
 | Pointer Scanner (core + CLI) | ✅ (ETAPA 15, motor + comandos) |
-| Pointer V2: cadenas persistentes + resolver | ◐ (infraestructura lista; scan con offsets y CLI en la siguiente etapa) |
+| Pointer V2: offsets + resolución dinámica | ✅ (scan con offsets, `pointer resolve`, `table read/set` dinámicos) |
 | GUI | ⏳ siguiente etapa |
 
 ## Requisitos
@@ -159,10 +159,12 @@ table read [idx]                     Leer/actualizar el valor actual
 table set <idx> <valor>              Escribir un nuevo valor (tipo de la entrada)
 table toggle <idx> | remove <idx>    Activar-desactivar / eliminar
 table clear | save <f> | load <f>    Vaciar / guardar / cargar
-pointer scan <dir> [depth=N] [code]  Buscar cadenas de punteros hacia una direccion
+pointer scan <dir> [depth=N] [max_offset=X] [offset_step=S] [module-only] [code] [type=T]
+                                     Buscar cadenas de punteros hacia una direccion (con offsets)
 pointer results [n]                  Mostrar cadenas del ultimo escaneo
 pointer chains [n]                   Alias de 'pointer results'
-pointer add <idx>                    Anadir la base de una cadena a la tabla
+pointer add <idx>                    Anadir la cadena (PointerChainRef) a la tabla
+pointer resolve <idx>                Resolver una entrada pointer a su direccion actual
 help | quit
 ```
 
@@ -221,12 +223,12 @@ Columnas: `address type enabled description`. `enabled` es `1`/`0`.
 
 ### Limitaciones
 
-- La tabla usa **direcciones absolutas**: dependen de ASLR y solo son válidas
-  mientras el proceso (y su mapeo) siga siendo el mismo. Tras reiniciar un
-  programa, las direcciones guardadas apuntarán a otra cosa o a nada; por eso
-  al cambiar de proceso las entradas se marcan `(stale)`. (El Pointer Scanner
-  de una fase futura resolverá direcciones dinámicas; de momento la tabla
-  trabaja con las direcciones absolutas actuales.)
+- Las entradas **absolutas** (v1) dependen de ASLR y solo son válidas mientras
+  el proceso (y su mapeo) siga siendo el mismo; al cambiar de proceso se
+  marcan `(stale)`. Las entradas **dinámicas** (v2, kind `pointer`), en
+  cambio, guardan una cadena resoluble (`module + file offset` + offsets) y
+  `table read`/`table set` la resuelven de nuevo en cada operación, así que
+  sobreviven a un reinicio con ASLR (si el binario no cambia).
 
 ## Pointer Scanner (core)
 
@@ -270,23 +272,34 @@ Session/CLI se encarga del ciclo ptrace).
 ### Comandos CLI (integración con Session y Address Table)
 
 ```
-pointer scan <direccion> [depth=N] [code]
+pointer scan <direccion> [depth=N] [max_offset=X] [offset_step=S] [module-only] [code] [type=T]
 pointer results [n]
 pointer chains [n]        # alias de results
 pointer add <indice>
+pointer resolve <indice>
 ```
 
-- `pointer scan` valida que la dirección pertenezca a una región legible,
-  acepta `depth=` entre 1 y 7 (por defecto 3) y `code` para incluir regiones
-  ejecutables, y hace **un solo attach** alrededor de todo el escaneo
-  (`Session::with_memory`). Muestra un resumen (target, depth, levels,
-  chains) y avisa si se truncó por límite de aristas o de cadenas.
+- `pointer scan` valida que la dirección pertenezca a una región legible y
+  hace **un solo attach** alrededor de todo el escaneo
+  (`Session::with_memory`). Opciones: `depth=` entre 1 y 7 (por defecto 3),
+  `code` para incluir regiones ejecutables, `module-only` para quedarse solo
+  con cadenas cuya raíz es de módulo (persistente), y `type=T` para fijar el
+  tipo del valor final (por defecto: el tipo de sesión). Muestra un resumen
+  (target, depth, levels, chains, ventana de offsets) y avisa si se truncó
+  por límite de aristas o de cadenas.
 - `pointer results` muestra las primeras cadenas (10 por defecto) del último
-  escaneo en formato `0xA -> 0xB -> TARGET`; las cadenas se reconstruyen sin
-  volver a escanear (frontera incremental, ver arriba).
-- `pointer add <idx>` toma la cadena `idx` del último escaneo y añade su
-  **base** (`nodes[0]`) a la Address Table con tipo `pointer` y la cadena
-  completa como descripción.
+  escaneo; las cadenas se reconstruyen sin volver a escanear (frontera
+  incremental) e intercalan sus offsets (`0xA -> +0x20 -> 0xB -> +0x18 ->
+  TARGET`). Cada cadena muestra además su raíz: `[root MODULE ...]
+  (persistente)` o `[root ABSOLUTE ...] (no persistente)`.
+- `pointer add <idx>` guarda en la Address Table una **cadena dinámica**
+  (`PointerChainRef`): raíz (`MODULE` = pathname + offset de archivo, o
+  `ABSOLUTE` como fallback no persistente) + offsets + tipo del valor final.
+  Si la raíz está en heap/stack/anónima se marca como no persistente.
+- `pointer resolve <idx>` resuelve una entrada dinámica de la tabla contra
+  el proceso actual y muestra la dirección resultante y el valor leído
+  (errores explícitos: módulo no encontrado, offset fuera del módulo,
+  cadena rota, valor no legible).
 
 ```text
 mt(1234)> pointer scan 0x7f1234567890 depth=3
@@ -295,24 +308,30 @@ target: 0x00007f1234567890
 depth: 3
 levels: 3
 chains: 427
+offsets: 0x0..0x100 (step 0x8)
 mt(1234)> pointer results 2
 [0] depth 3:
-0x000055a92c9ab200 -> 0x000055a92c9ab1e0 -> 0x000055a92c9ab1c0 -> 0x00007f1234567890
+  [root MODULE /home/u/MemoryTool/build/pointer_offset_test +0x4110] (persistente)
+  0x000055a92c9ab200 -> +0x20 -> 0x000055a92c9ab1e0 -> +0x18 -> 0x00007f1234567890
 [1] depth 1:
-0x00007ffd12345678 -> 0x00007f1234567890
+  [root ABSOLUTE 0x00007ffd12345678] (no persistente)
+  0x00007ffd12345678 -> +0x18 -> 0x00007f1234567890
 mt(1234)> pointer add 0
 Entrada 0 anadida desde la cadena 0:
-  0x000055a92c9ab200 (pointer)
-  0x000055a92c9ab200 -> 0x000055a92c9ab1e0 -> 0x000055a92c9ab1c0 -> 0x00007f1234567890
+  pointer[module]  (persistente)
+  tipo: int32
+  0x000055a92c9ab200 -> +0x20 -> 0x000055a92c9ab1e0 -> +0x18 -> 0x00007f1234567890
+mt(1234)> pointer resolve 0
+Entrada 0 resuelta: 0x00007f1234567890 = 4242 (int32)
 ```
 
-**Limitaciones de la versión 1 (importante):** la Address Table guarda
-**direcciones absolutas**. `pointer add` añade `nodes[0]` tal cual: es
-informativo (registra qué cadena llevaba a ese valor), pero **no** convierte
-la entrada en un puntero dinámico que sobreviva a un reinicio de ASLR. Si el
-proceso se reinicia, las direcciones de la cadena apuntarán a otra cosa o a
-nada. Tampoco hay offsets (`base + offset -> ptr`) en esta versión: el motor
-solo encuentra cadenas de punteros directos.
+**Ventana de offsets:** al leer un puntero `V` en `source` se comprueba
+`V + o` para cada `o = 0, offset_step, ..., max_offset` (por defecto
+`max_offset=0x100`, `offset_step=8`). `max_offset=0` es exactamente el
+comportamiento V1 (cadenas directas). El offset se aplica **después** del
+dereference y se guarda en la arista y en la cadena; no tiene nada que ver
+con la localización persistente de la raíz (que es `module + file offset` y
+se calcula después de encontrar la cadena).
 
 ### Pointer V2: cadenas persistentes y resolución (infraestructura)
 
@@ -362,10 +381,36 @@ de la raíz (para bases `MODULE`) o dirección absoluta (para `ABSOLUTE`).
 - `steps` = offsets post-deref separados por coma (vacío si no hay derefs).
 - No se persisten `stale`, el valor actual ni la dirección resuelta temporal.
 
-El **scan con offsets** (`pointer scan` V2), la CLI (`pointer add` V2,
-`table read/set` dinámicos) y la migración de entradas v1 llegarán en la
-siguiente etapa; esta fase solo prepara la infraestructura (estructuras,
-resolver y formato).
+### FASE 4: uso completo (scan con offsets, resolve y tabla dinámica)
+
+La FASE 4 activa todo el flujo V2 en la CLI:
+
+- **`pointer scan` con offsets**: `max_offset` (0..0x10000, por defecto
+  0x100), `offset_step` (> 0, por defecto 8), `module-only` y `type=`.
+  `max_offset=0` reproduce el comportamiento V1.
+- **`pointer add` V2**: guarda la `PointerChainRef` completa (raíz
+  `MODULE`/`ABSOLUTE` + offsets + tipo final), indicando si es persistente.
+- **`pointer resolve <idx>`**: resuelve una entrada dinámica de la tabla en
+  el proceso actual (un solo attach).
+- **`table read <idx>` / `table set <idx> <valor>`** sobre una entrada
+  dinámica: resuelven la cadena en **cada** operación (nunca se guarda la
+  dirección resuelta; esto es lo que hace que la entrada sobreviva a ASLR) y
+  leen/escriben el valor final con el mismo mecanismo que `set`/`table set`
+  absolutos (`write_value_at`, sin duplicar lógica).
+
+**MODULE vs ABSOLUTE (ASLR):**
+
+- `MODULE` (raíz en un mapeo con pathname, p. ej. `.data`/`.bss` del
+  ejecutable o de una librería) guarda `pathname + file offset` y **puede
+  resolverse de nuevo tras reiniciar el proceso** (si el binario no cambia:
+  recompilar puede invalidar el offset).
+- `ABSOLUTE` (heap/stack/anónimas) guarda la dirección cruda: es
+  informativa pero **no sobrevive a ASLR**; no se finge persistencia.
+
+Ejemplo del flujo completo (probado en la E2E): `pointer scan` → `pointer
+results` → `pointer add 0` → `pointer resolve 0` → `table set 0 9001` →
+`table save` → reiniciar el proceso → `attach` → `table load` → `table read
+0` devuelve una dirección **nueva** (ASLR) con el valor correcto.
 
 ### Programa de prueba `pointer_test`
 
@@ -487,8 +532,9 @@ bits) y `build/test_pointer` (clasificación y selección de regiones,
 `FlatHashSet`, y reconstrucción de cadenas con datos sintéticos:
 profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites)`build/test_pointer_cmd` (parsing/validación de `pointer scan` —depth y
 opciones—, descripción textual de cadenas, `Session` conservando el último
-`PointerScanResult`, `pointer add` creando la entrada tipo `pointer`, y
-persistencia de ese tipo en el formato de tabla v1) y
+`PointerScanResult`, `pointer add` V2 creando la cadena dinámica
+(`PointerChainRef`) con su tipo final, `pointer resolve` y sus validaciones,
+y `table read`/`table set` dinámicos) y
 `build/test_pointer_v2` (conversión de raíz absoluta a `module+offset`,
 cálculo inverso con módulo inexistente y offset fuera del módulo,
 resolución de cadenas con offsets `[0]`, `[0x20]` y `[0x20,0x18]` sobre
@@ -531,14 +577,19 @@ set verificado en el proceso → save → clear → load → toggle) y el Pointe
 Scanner contra `pointer_test` (depth 1/2/3 reconstruyendo
 `Node3->Node2->Node1->TARGET`, ciclo controlado sin cuelgues y sin cadenas
 cíclicas, truncado por límite de aristas, y la CLI completa: `pointer scan`
-con depth 1/2/3, `pointer results`, `pointer add` creando una entrada
-`pointer` en la Address Table, y su save/clear/load, además de los errores
-de target inválido, índice inválido, `pointer results` sin escaneo previo y
-`depth=0`/`depth=8`) y la resolución V2 frente a ASLR: guarda una cadena
-`pointer type=int32 ... steps=0x20,0x18` contra `pointer_offset_test`,
-resuelve al target del proceso, lo reinicia y comprueba que la **misma**
-cadena guardada resuelve a una dirección **nueva** (ASLR) con el mismo
-valor final.
+con depth 1/2/3 (caso `max_offset=0`), `pointer results`, `pointer add`
+creando una entrada dinámica en la Address Table y su save/clear/load,
+además de los errores de target inválido, índice inválido, `pointer
+results` sin escaneo previo y `depth=0`/`depth=8`) y el flujo V2 completo
+contra `pointer_offset_test`: `pointer scan` con offsets (por defecto
+`max_offset=0x100`, step 8), `pointer results` mostrando la cadena con
+`+0x20 -> +0x18` y raíz `[root MODULE]`, `pointer add 0` (persistente),
+`pointer resolve 0`, `table read 0`, `table set 0 9001` (verificado en el
+proceso), `table save` (línea `pointer type=int32 ... steps=0x18`),
+reinicio del proceso y, tras `attach` + `table load`, comprobación de que
+`table read 0` resuelve una dirección **nueva** (ASLR) con el valor
+correcto, `table set 0 1234` en el proceso nuevo, y errores del resolver
+(módulo inexistente, offset fuera del módulo, índice inválido).
 
 ## Hoja de ruta
 
@@ -560,7 +611,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 12 | Strings y bytes | ⏳ (requiere ampliar `types`) |
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
 | 14 | Pattern/AOB Scanner | ✅ |
-| 15 | Pointer Scanner | ✅ (core + CLI; V2: infraestructura de cadenas persistentes y resolver) |
+| 15 | Pointer Scanner | ✅ (core + CLI; V2: offsets, resolver, `table read/set` dinámicos) |
 | 16 | Address Table | ✅ (primera versión) |
 | 17 | Modificar/restaurar memoria | ◐ (versión mínima: `set`) |
 | 18 | Optimizar velocidad y RAM | ⏳ |
