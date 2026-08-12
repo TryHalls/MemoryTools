@@ -60,8 +60,12 @@ trap cleanup EXIT
 
 fail() {
     echo "FALLO: $1"
-    echo "--- salida de memorytool ---"
+    echo "--- salida de memorytool (sesion 1) ---"
     cat "$OUT"
+    if [ -n "${OUT2:-}" ] && [ -f "$OUT2" ]; then
+        echo "--- salida de memorytool (sesion 2) ---"
+        cat "$OUT2"
+    fi
     exit 1
 }
 
@@ -324,6 +328,138 @@ wait_out 'activada' || fail "table toggle (re) no respondio"
 rm -f "$TF"
 TF=""
 echo "OK: Address Table completa (add-result/read/set/save/clear/load/toggle)"
+
+echo
+echo "== STRINGS Y BYTES (first/next dinamicos contra objetivo) =="
+# Segundo objetivo: cambia 'mensaje' a los 6s y el byte datos[2] a los 10s.
+( sleep 6; echo "m mundo memorytool"; sleep 4; echo "b"; sleep 60 ) | "$OBJ" > "$LOG2" 2>&1 &
+OBJ2_PID=$!
+PID2=""
+for _ in $(seq 1 50); do
+    PID2=$(grep -m1 -o 'PID: [0-9]*' "$LOG2" | grep -o '[0-9]*' || true)
+    [ -n "$PID2" ] && break
+    sleep 0.2
+done
+[ -n "$PID2" ] || fail "objetivo (strings) no arranco"
+echo "objetivo strings PID=$PID2"
+MSGADDR=$(grep -m1 'mensaje' "$LOG2" | grep -o '0x[0-9a-f]*' || true)
+DADDR=$(grep -m1 'datos' "$LOG2" | grep -o '0x[0-9a-f]*' || true)
+[ -n "$MSGADDR" ] && [ -n "$DADDR" ] || fail "faltan direcciones de mensaje/datos"
+# Normalizadas sin ceros a la izquierda (el escaner imprime 16 digitos)
+NMSG=$(printf '%s' "$MSGADDR" | sed -E 's/^0x0*//')
+NDAT=$(printf '%s' "$DADDR" | sed -E 's/^0x0*//')
+echo "MSGADDR=$MSGADDR DADDR=$DADDR"
+
+FIFO2=$(mktemp -u)
+OUT2=$(mktemp)
+rm -f "$FIFO2"
+mkfifo "$FIFO2"
+"$BIN" "$PID2" < "$FIFO2" > "$OUT2" 2>&1 &
+MT2_PID=$!
+exec 4>"$FIFO2"
+feed2() { printf '%s\n' "$@" >&4; }
+wait_out2() {
+    local pat="$1" tries="${2:-40}"
+    for _ in $(seq 1 "$tries"); do
+        grep -q "$pat" "$OUT2" && return 0
+        sleep 0.3
+    done
+    return 1
+}
+wait_log2() { # espera un patron en el log del objetivo de strings (LOG2)
+    local pat="$1"
+    for _ in $(seq 1 40); do grep -q "$pat" "$LOG2" && return 0; sleep 0.3; done
+    return 1
+}
+wait_out2 'mt(' || fail "la sesion strings/bytes no arranco"
+
+echo "-- first \"hola memorytool\" string: verificar direccion"
+BASE=$(wc -l < "$OUT2")
+feed2 'first "hola memorytool" string' 'count' 'results 20'
+wait_out2 'First Scan' || fail "first string no respondio"
+wait_out2 '\[ *0\] 0x' || fail "no llego la lista de resultados del first string"
+sleep 0.5
+BLOCKFS=$(sed -n "$((BASE + 1)),\$p" "$OUT2")
+contains BLOCKFS "$NMSG" || { echo "$BLOCKFS"; fail "la direccion de 'mensaje' no aparece en el first string"; }
+
+wait_log2 'mensaje -> mundo memorytool' || fail "objetivo no cambio el mensaje"
+
+echo "-- next changed (el mensaje cambio)"
+BASE=$(wc -l < "$OUT2")
+feed2 'next changed' 'count'
+wait_out2 'Next Scan' || fail "next changed (string) no respondio"
+sleep 0.5
+NSC=$(sed -n "$((BASE + 1)),\$p" "$OUT2" | sed -n 's/.*Next Scan: \([0-9][0-9]*\) coincidencias.*/\1/p')
+[ -n "$NSC" ] && [ "$NSC" -ge 1 ] || { echo "ultimas lineas:"; sed -n "$((BASE + 1)),\$p" "$OUT2"; fail "next changed (string) devolvio ${NSC:-0} coincidencias"; }
+
+feed2 'next "mundo memorytool" string' 'count' 'results 20'
+wait_out2 'Next Scan' || fail "next string no respondio"
+sleep 0.5
+BLOCKSE=$(sed -n "$((BASE + 1)),\$p" "$OUT2")
+contains BLOCKSE "$NMSG" || { echo "$BLOCKSE"; fail "next exact no conserva la direccion del mensaje"; }
+echo "OK: string first/next changed/next exact"
+
+echo "-- first bytes exacto: 48 8B 05 90 90 (antes del toggle, datos=05)"
+BASE=$(wc -l < "$OUT2")
+feed2 'first 48 8B 05 90 90 bytes' 'count' 'results 20'
+wait_out2 'First Scan' || fail "first bytes no respondio"
+sleep 0.5
+BLOCKFB=$(sed -n "$((BASE + 1)),\$p" "$OUT2")
+contains BLOCKFB "$NDAT" || { echo "$BLOCKFB"; fail "la direccion de 'datos' no aparece en el first bytes"; }
+
+echo "-- first bytes con wildcard: 48 8B 05 ?? ??"
+BASE=$(wc -l < "$OUT2")
+feed2 'first 48 8B 05 ?? ?? bytes' 'count' 'results 20'
+wait_out2 'First Scan' || fail "first bytes wildcard no respondio"
+sleep 0.5
+BLOCKFW=$(sed -n "$((BASE + 1)),\$p" "$OUT2")
+contains BLOCKFW "$NDAT" || { echo "$BLOCKFW"; fail "la direccion de 'datos' no aparece con wildcard"; }
+
+echo "-- next changed tras togglear el byte (datos[2] 05 -> 04)"
+# El patron 'datos[2] ->' solo aparece en la linea del toggle real; la ayuda
+# de arranque contiene 'datos[2]' sin la flecha y no debe dar falso positivo.
+wait_log2 'datos\[2\] ->' || fail "objetivo no toggleo el byte"
+BASE=$(wc -l < "$OUT2")
+feed2 'next changed' 'count'
+wait_out2 'Next Scan' || fail "next changed (bytes) no respondio"
+sleep 0.5
+NBC=$(sed -n "$((BASE + 1)),\$p" "$OUT2" | sed -n 's/.*Next Scan: \([0-9][0-9]*\) coincidencias.*/\1/p')
+[ -n "$NBC" ] && [ "$NBC" -ge 1 ] || { echo "ultimas lineas:"; sed -n "$((BASE + 1)),\$p" "$OUT2"; fail "next changed (bytes) devolvio ${NBC:-0} coincidencias"; }
+
+feed2 'next 48 8B 04 90 90 bytes' 'count' 'results 20'
+wait_out2 'Next Scan' || fail "next bytes no respondio"
+sleep 0.5
+BLOCKBE=$(sed -n "$((BASE + 1)),\$p" "$OUT2")
+contains BLOCKBE "$NDAT" || { echo "$BLOCKBE"; fail "next exact (bytes) no conserva 'datos'"; }
+echo "OK: bytes exacto/wildcard/next changed/next exact"
+
+echo "-- errores: string vacia, patron invalido, filtro numerico, add-result"
+# Re-escaneo valido para garantizar candidatos dinamicos (los patrones
+# invalidos siguientes no limpian resultados, pero el flujo debe probar la
+# validacion con candidatos presentes).
+feed2 'first 48 8B 05 ?? ?? bytes' 'count'
+wait_out2 'First Scan' || fail "first re-scan no respondio"
+feed2 'first "" string'
+wait_out2 'string vacia' || fail "string vacia no rechazada"
+feed2 'first 48 8G bytes'
+wait_out2 'invalido' || fail "patron de bytes invalido no rechazado"
+feed2 'next increased'
+wait_out2 'no aplican' || fail "next increased en dinamico no rechazado"
+feed2 'table add-result 0'
+wait_out2 'no se pueden anadir' || fail "table add-result en dinamico no rechazado"
+echo "OK: errores de valores dinamicos validados"
+
+feed2 'quit'
+sleep 0.5
+exec 4>&-
+MT2_PID=""
+rm -f "$FIFO2" "$OUT2"
+FIFO2=""; OUT2=""
+kill "$OBJ2_PID" 2>/dev/null || true
+OBJ2_PID=""
+rm -f "$LOG2"
+LOG2=""
+echo "OK: Strings y Bytes completos (first/next/errores)"
 
 echo
 echo "== POINTER SCANNER (core: pointer_test + pointer_driver) =="

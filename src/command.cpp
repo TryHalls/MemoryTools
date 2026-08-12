@@ -46,6 +46,100 @@ static bool parse_addr(const std::string& s, uint64_t& out) {
     return end != s.c_str() && *end == '\0' && errno != ERANGE;
 }
 
+// --- Valores dinamicos (string / bytes) -----------------------------------
+
+// ¿El ultimo token es un nombre de tipo dinamico? Devuelve el DataType o
+// I32 (no dinamico). 'string' busca un texto; 'bytes'/'pattern'/'aob' un
+// patron hex con wildcards (coherente con el comando pattern/aob).
+static DataType dynamic_type_token(const std::string& tok) {
+    if (tok == "string") return DataType::STRING;
+    if (tok == "bytes" || tok == "pattern" || tok == "aob") return DataType::BYTES;
+    return DataType::I32;
+}
+
+// Une tokens [0, n) con espacios y quita comillas envolventes si las hay
+// (la CLI divide por espacios, asi que "hola memorytool" llega en varios
+// tokens con las comillas en el primero/ultimo).
+static std::string join_strip_quotes(const CommandArgs& args, size_t n) {
+    std::string t;
+    for (size_t i = 0; i < n; ++i) {
+        if (i > 0) t += ' ';
+        t += args[i];
+    }
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        t = t.substr(1, t.size() - 2);
+    return t;
+}
+
+// Convierte el texto del valor a un BytePattern segun el tipo dinamico
+// (string -> bytes exactos; bytes -> parse_pattern con wildcards).
+static BytePattern build_dynamic_pattern(DataType type, const std::string& text,
+                                         std::string& err) {
+    if (type == DataType::STRING) return pattern_from_text(text, err);
+    BytePattern pat;
+    if (!parse_pattern(text, pat)) err = pat.error;
+    return pat;
+}
+
+// Texto legible del patron de un escaneo dinamico (para 'results').
+static std::string dynamic_pattern_text(const DynamicScanSpec& spec) {
+    std::string s;
+    if (spec.type == DataType::STRING) {
+        s = "\"";
+        char h[8];
+        for (uint8_t b : spec.pattern.bytes) {
+            if (b >= 0x20 && b < 0x7f) {
+                s += (char)b;
+            } else {
+                snprintf(h, sizeof h, "\\x%02x", b);
+                s += h;
+            }
+        }
+        s += "\"";
+        return s;
+    }
+    char h[8];
+    for (size_t i = 0; i < spec.pattern.bytes.size(); ++i) {
+        if (i > 0) s += ' ';
+        if (spec.pattern.mask[i]) {
+            snprintf(h, sizeof h, "%02X", spec.pattern.bytes[i]);
+            s += h;
+        } else {
+            s += "??";
+        }
+    }
+    return "[" + s + "]";
+}
+
+static CommandResult cmd_first_dynamic(DataType type, const std::string& text,
+                                       Session& s) {
+    std::string err;
+    BytePattern pat = build_dynamic_pattern(type, text, err);
+    if (!pat.valid) {
+        printf("Patron invalido (%s): %s\n", type_name(type), err.c_str());
+        return {};
+    }
+    const DynamicScanSpec spec = make_dynamic_spec(type, std::move(pat));
+    s.set_scan_type(type);
+
+    std::string err2;
+    bool ok = s.with_memory([&](Memory& mem) {
+        auto regions = parse_maps(s.pid());
+        s.scanner().first_scan_dynamic(mem, regions, spec);
+    }, err2);
+    if (!ok) {
+        printf("Error: %s\n", err2.c_str());
+        return {};
+    }
+    printf("First Scan: %zu coincidencias (%s, len %zu)\n",
+           s.scanner().count(), type_name(type), spec.length());
+    if (s.scanner().truncated())
+        printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
+    if (s.scanner().warned())
+        printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
+    return {};
+}
+
 static std::string display_value(Value v, DataType t) {
     std::string s = value_to_string(v, t);
     // PTR ya se muestra como 0x... (una direccion); no anadir el sufijo hex.
@@ -183,23 +277,52 @@ static CommandResult cmd_maps(const CommandArgs& args, Session& s) {
 static CommandResult cmd_first(const CommandArgs& args, Session& s) {
     if (!has_target(s)) return {};
     if (args.empty()) {
-        printf("Uso: first <valor> [tipo] | first unknown [tipo]\n");
+        printf("Uso: first <valor> [tipo] | first unknown [tipo]\n"
+               "     first \"<texto>\" string | first <hex...> bytes|pattern\n");
         return {};
     }
 
-    DataType type = DataType::I32;
-    std::optional<Value> target;
+    // first unknown [tipo]: escaneo numerico de valor desconocido (nunca
+    // dinamico, aunque el ultimo token parezca un tipo).
     if (args[0] == "unknown") {
+        DataType type = DataType::I32;
         if (args.size() >= 2 && parse_type(args[1], type)) {}
-    } else {
-        if (args.size() >= 2 && parse_type(args.back(), type)) {}
-        Value v;
-        if (!parse_value(args[0], type, v)) {
-            printf("Valor invalido: %s (tipo %s)\n", args[0].c_str(), type_name(type));
+        s.set_scan_type(type);
+        std::string err;
+        bool ok = s.with_memory([&](Memory& mem) {
+            auto regions = parse_maps(s.pid());
+            s.scanner().first_scan(mem, regions, type, std::nullopt);
+        }, err);
+        if (!ok) {
+            printf("Error: %s\n", err.c_str());
             return {};
         }
-        target = v;
+        printf("Escaneo 'unknown' completado (%zu posiciones legibles).\n",
+               s.scanner().count());
+        if (s.scanner().truncated())
+            printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
+        if (s.scanner().warned())
+            printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
+        return {};
     }
+
+    // Valores dinamicos: first "<texto>" string | first <hex...> bytes|pattern.
+    const DataType dynt = dynamic_type_token(args.back());
+    if (type_is_dynamic(dynt)) {
+        const std::string text = join_strip_quotes(args, args.size() - 1);
+        return cmd_first_dynamic(dynt, text, s);
+    }
+
+    // Camino numerico (sin cambios): first <valor> [tipo].
+    DataType type = DataType::I32;
+    std::optional<Value> target;
+    if (args.size() >= 2 && parse_type(args.back(), type)) {}
+    Value v;
+    if (!parse_value(args[0], type, v)) {
+        printf("Valor invalido: %s (tipo %s)\n", args[0].c_str(), type_name(type));
+        return {};
+    }
+    target = v;
     s.set_scan_type(type);
 
     std::string err;
@@ -212,12 +335,8 @@ static CommandResult cmd_first(const CommandArgs& args, Session& s) {
         return {};
     }
 
-    if (!target)
-        printf("Escaneo 'unknown' completado (%zu posiciones legibles).\n",
-               s.scanner().count());
-    else
-        printf("First Scan: %zu coincidencias (%s = %s)\n", s.scanner().count(),
-               type_name(type), display_value(*target, type).c_str());
+    printf("First Scan: %zu coincidencias (%s = %s)\n", s.scanner().count(),
+           type_name(type), display_value(*target, type).c_str());
     if (s.scanner().truncated())
         printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
     if (s.scanner().warned())
@@ -232,7 +351,54 @@ static CommandResult cmd_next(const CommandArgs& args, Session& s) {
         return {};
     }
     if (args.empty()) {
-        printf("Uso: next <valor> [tipo] | next changed|... | next <op> <valor> [tipo]\n");
+        printf("Uso: next <valor> [tipo] | next changed|... | next <op> <valor> [tipo]\n"
+               "     next \"<texto>\" string | next <hex...> bytes (escaneo dinamico)\n");
+        return {};
+    }
+
+    // Refinamiento de un escaneo dinamico (string/bytes): changed, unchanged
+    // o un patron nuevo (coincidencia exacta). Los filtros numericos no
+    // tienen sentido para longitud variable.
+    if (s.scanner().is_dynamic()) {
+        Filter filter = Filter::EXACT;
+        std::optional<DynamicScanSpec> newspec;
+        const std::string& tok = args[0];
+        if (tok == "changed") {
+            filter = Filter::CHANGED;
+        } else if (tok == "unchanged") {
+            filter = Filter::UNCHANGED;
+        } else if (tok == "increased" || tok == "increase" ||
+                   tok == "decreased" || tok == "decrease" ||
+                   tok == ">" || tok == "<" || tok == ">=" ||
+                   tok == "<=" || tok == "!=" || tok == "=") {
+            printf("Los filtros numericos (> < >= <= != increased/decreased) no aplican "
+                   "a string/bytes; usa 'next changed'/'next unchanged' o un patron nuevo.\n");
+            return {};
+        } else {
+            // Patron nuevo: hereda el tipo dinamico previo si no se indica.
+            DataType dt = s.scan_type();
+            const DataType toktype = dynamic_type_token(args.back());
+            if (type_is_dynamic(toktype)) dt = toktype;
+            const std::string text = join_strip_quotes(args, args.size() - 1);
+            std::string err;
+            BytePattern pat = build_dynamic_pattern(dt, text, err);
+            if (!pat.valid) {
+                printf("Patron invalido (%s): %s\n", type_name(dt), err.c_str());
+                return {};
+            }
+            newspec = make_dynamic_spec(dt, std::move(pat));
+            s.set_scan_type(dt);
+        }
+
+        std::string err;
+        bool ok = s.with_memory([&](Memory& mem) {
+            s.scanner().next_scan_dynamic(mem, filter, newspec);
+        }, err);
+        if (!ok) {
+            printf("Error: %s\n", err.c_str());
+            return {};
+        }
+        printf("Next Scan: %zu coincidencias\n", s.scanner().count());
         return {};
     }
 
@@ -302,6 +468,24 @@ static CommandResult cmd_count(const CommandArgs&, Session& s) {
 static CommandResult cmd_results(const CommandArgs& args, Session& s) {
     if (!s.scanner().has_results()) {
         printf("No hay resultados previos.\n");
+        return {};
+    }
+    // Resultados dinamicos: address + longitud + patron (el valor no se
+    // copia; el patron vive compartido en la especificacion del escaneo).
+    if (s.scanner().is_dynamic()) {
+        const DynamicScanSpec& spec = s.scanner().dyn_spec();
+        const auto& res = s.scanner().dynamic_results();
+        size_t n = 20;
+        if (!args.empty()) n = (size_t)strtoull(args[0].c_str(), nullptr, 10);
+        n = std::min(n, res.size());
+        const std::string ptxt = dynamic_pattern_text(spec);
+        for (size_t i = 0; i < n; ++i)
+            printf("[%4zu] 0x%016llx  len %zu  %s (%s)\n", i,
+                   (unsigned long long)res[i].addr, spec.length(),
+                   ptxt.c_str(), type_name(spec.type));
+        if (n < res.size())
+            printf("... y %zu mas. Usa 'results %zu' para verlas todas.\n",
+                   res.size() - n, res.size());
         return {};
     }
     size_t n = 20;
@@ -474,6 +658,13 @@ static CommandResult cmd_set(const CommandArgs& args, Session& s) {
         printf("Direccion invalida: %s\n", args[0].c_str());
         return {};
     }
+    if (args.size() >= 3 &&
+        (args[2] == "string" || args[2] == "bytes" ||
+         args[2] == "pattern" || args[2] == "aob")) {
+        printf("La escritura de strings/bytes no esta soportada; "
+               "usa 'set' con un tipo numerico.\n");
+        return {};
+    }
     DataType type = DataType::I32;
     if (args.size() >= 3 && parse_type(args[2], type)) {}
     Value v;
@@ -559,6 +750,13 @@ static CommandResult cmd_table_add(const CommandArgs& args, Session& s) {
         printf("Direccion invalida: %s\n", args[0].c_str());
         return {};
     }
+    if (args.size() >= 2 &&
+        (args[1] == "string" || args[1] == "bytes" ||
+         args[1] == "pattern" || args[1] == "aob")) {
+        printf("Los tipos string/bytes no se pueden guardar en la tabla; "
+               "usa un tipo numerico.\n");
+        return {};
+    }
     DataType type = DataType::I32;
     size_t di = 1;
     if (args.size() >= 2 && parse_type(args[1], type)) di = 2;
@@ -573,6 +771,11 @@ static CommandResult cmd_table_add(const CommandArgs& args, Session& s) {
 static CommandResult cmd_table_add_result(const CommandArgs& args, Session& s) {
     if (!s.scanner().has_results()) {
         printf("No hay resultados previos; usa 'first' primero.\n");
+        return {};
+    }
+    if (s.scanner().is_dynamic()) {
+        printf("Los resultados de string/bytes no se pueden anadir a la tabla; "
+               "usa un escaneo numerico.\n");
         return {};
     }
     if (args.empty()) {
@@ -1189,12 +1392,16 @@ static const CommandDef kCommands[] = {
     {"maps", "maps [pid]                           Mostrar regiones de memoria", cmd_maps},
     {"first",
      "first <valor> [tipo]                 Primer escaneo (valor exacto)\n"
-     "  first unknown [tipo]                 Primer escaneo (valor desconocido)",
+     "  first unknown [tipo]                 Primer escaneo (valor desconocido)\n"
+     "  first \"<texto>\" string              Buscar un texto (bytes ASCII)\n"
+     "  first <hex...> bytes|pattern         Buscar bytes con wildcards ??",
      cmd_first},
     {"next",
      "next <valor> [tipo]                  Refinar resultados (igual)\n"
      "  next changed|unchanged|increased|decreased   Refinar por cambio\n"
-     "  next >|<|>=|<=|!= <valor> [tipo]     Refinar por comparacion",
+     "  next >|<|>=|<=|!= <valor> [tipo]     Refinar por comparacion\n"
+     "  next \"<texto>\" string | <hex...> bytes   Refinar un escaneo dinamico\n"
+     "  next changed|unchanged               (string/bytes: cambio exacto)",
      cmd_next},
     {"count", "count                                Numero de coincidencias", cmd_count},
     {"results", "results [n]                          Mostrar las primeras n coincidencias", cmd_results},

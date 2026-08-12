@@ -15,8 +15,17 @@
 namespace mt {
 
 enum class DataType {
-    I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, PTR
+    I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, PTR,
+    STRING, // valor dinamico: secuencia de bytes de un texto (longitud variable)
+    BYTES,  // valor dinamico: patron de bytes con wildcards (longitud variable)
 };
+
+// true para los tipos de longitud variable (string / bytes). Estos NO usan
+// el camino numerico (Value de 8 bytes): el escaner First/Next los trata en
+// un camino separado (ver scanner.h) con longitud propia.
+inline bool type_is_dynamic(DataType t) {
+    return t == DataType::STRING || t == DataType::BYTES;
+}
 
 inline size_t type_size(DataType t) {
     switch (t) {
@@ -31,6 +40,9 @@ inline size_t type_size(DataType t) {
         case DataType::U64:
         case DataType::F64:
         case DataType::PTR: return 8;
+        // Los dinamicos no tienen anchura fija: longitud variable por escaneo.
+        case DataType::STRING:
+        case DataType::BYTES: return 1; // nunca usado por el camino numerico
     }
     return 8;
 }
@@ -52,6 +64,8 @@ inline const char* type_name(DataType t) {
         case DataType::F32: return "float";
         case DataType::F64: return "double";
         case DataType::PTR: return "pointer";
+        case DataType::STRING: return "string";
+        case DataType::BYTES: return "bytes";
     }
     return "?";
 }

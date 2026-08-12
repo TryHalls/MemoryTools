@@ -23,6 +23,8 @@ volatile uint16_t nivel       = 7;      // para probar int16/uint16
 volatile float    velocidad   = 1.5f;   // para probar float
 volatile int64_t  puntuacion  = 100000; // para probar int64
 volatile char     mensaje[64] = "hola memorytool"; // para probar strings
+volatile uint8_t  datos[16] = {0x48, 0x8B, 0x05, 0x90, 0x90, 0, 0, 0,
+                               0, 0, 0, 0, 0, 0, 0, 0}; // para probar bytes
 
 // Memoria anonima extra (opcional): se mapea si se pasa un tamanio en MB
 // como argumento. Sirve para probar escaneos con millones de candidatos
@@ -39,6 +41,23 @@ static void handle_command(const std::string& line) {
     if (line == "-" || line == "d" || line == "dec") { --dinero; printf("  dinero -> %d\n", (int)dinero); return; }
     if (line == "r" || line == "reset") { dinero = 12345; printf("  dinero -> 12345 (reset)\n"); return; }
     if (line == "n" || line == "nivel") { ++nivel; printf("  nivel -> %u\n", (unsigned)nivel); return; }
+    if (line == "b" || line == "byte") {
+        datos[2] ^= 0x01;
+        printf("  datos[2] -> 0x%02x\n", (unsigned)datos[2]);
+        return;
+    }
+    if (!line.empty() && (line[0] == 'm' || line[0] == 'M')) {
+        const std::string t = line.substr(1);
+        size_t sp = t.find_first_not_of(' ');
+        if (sp == std::string::npos) {
+            printf("  uso: m <texto>\n");
+        } else {
+            std::strncpy((char*)mensaje, t.c_str() + sp, sizeof(mensaje) - 1);
+            mensaje[sizeof(mensaje) - 1] = '\0';
+            printf("  mensaje -> %s\n", (const char*)mensaje);
+        }
+        return;
+    }
     if (!line.empty() && (line[0] == 'v' || line[0] == 'V')) {
         char* end = nullptr;
         float f = strtof(line.c_str() + 1, &end);
@@ -95,12 +114,14 @@ int main(int argc, char** argv) {
     printf("  velocidad  (float) : %p\n", (void*)&velocidad);
     printf("  puntuacion (int64) : %p\n", (void*)&puntuacion);
     printf("  mensaje    (char[64]): %p\n", (void*)&mensaje);
-    printf("Comandos: <numero> dinero | + o - incrementar/decrementar | r reset | n nivel++ | v <float> velocidad | q salir\n");
+    printf("  datos      (u8[16]) : %p\n", (void*)&datos);
+    printf("Comandos: <numero> dinero | + o - incrementar/decrementar | r reset | n nivel++ | v <float> velocidad | m <texto> mensaje | b toggle byte datos[2] | q salir\n");
 
     bool stdin_open = true;
     while (true) {
-        printf("PID: %d | Dinero: %d | Nivel: %u | Velocidad: %.2f | Puntuacion: %lld\n",
-               (int)getpid(), (int)dinero, (unsigned)nivel, (double)velocidad, (long long)puntuacion);
+        printf("PID: %d | Dinero: %d | Nivel: %u | Velocidad: %.2f | Puntuacion: %lld | Msg: %s | Datos2: %02x\n",
+               (int)getpid(), (int)dinero, (unsigned)nivel, (double)velocidad,
+               (long long)puntuacion, (const char*)mensaje, (unsigned)datos[2]);
         fflush(stdout);
 
         if (!stdin_open) { // stdin cerrado: seguimos vivos sin leer comandos

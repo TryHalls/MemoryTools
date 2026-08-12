@@ -19,8 +19,125 @@ namespace mt {
 
 void Scanner::clear() {
     candidates_.clear();
+    dyn_candidates_.clear();
+    dyn_spec_.reset();
     truncated_ = false;
     warned_ = false;
+}
+
+void Scanner::first_scan_dynamic(Memory& mem,
+                                 const std::vector<Region>& regions,
+                                 const DynamicScanSpec& spec) {
+    clear();
+    dyn_spec_ = spec;
+    const size_t L = spec.length();
+    if (L == 0 || !spec.pattern.valid) return;
+
+    auto emit = [&](uint64_t addr, const uint8_t* win) {
+        if (dyn_candidates_.size() >= kMaxCandidates) {
+            truncated_ = true;
+            return false;
+        }
+        if (!warned_ && dyn_candidates_.size() >= kWarnCandidates)
+            warned_ = true;
+        DynamicCandidate c;
+        c.addr = addr;
+        if (!spec.wild_pos.empty()) {
+            c.prev_wild.reserve(spec.wild_pos.size());
+            for (size_t p : spec.wild_pos) c.prev_wild.push_back(win[p]);
+        }
+        dyn_candidates_.push_back(std::move(c));
+        return true;
+    };
+
+    // Busqueda no alineada por bloques con solapamiento (los patrones que
+    // cruzan el limite de bloque se encuentran gracias al overlap).
+    for_each_window(mem, regions, L, 1, [&](const uint8_t* win, uint64_t addr) {
+        if (!pattern_window_matches(win, spec.pattern)) return true;
+        return emit(addr, win);
+    });
+}
+
+void Scanner::next_scan_dynamic(Memory& mem, Filter filter,
+                                const std::optional<DynamicScanSpec>& newspec) {
+    if (!dyn_spec_) return;
+    const DynamicScanSpec& base = newspec ? *newspec : *dyn_spec_;
+    const size_t L = base.length();
+    if (L == 0 || !base.pattern.valid) return;
+    const BytePattern& pat = base.pattern;
+    const bool compare_prev =
+        (filter == Filter::CHANGED || filter == Filter::UNCHANGED);
+
+    if (!std::is_sorted(dyn_candidates_.begin(), dyn_candidates_.end(),
+                        [](const DynamicCandidate& a, const DynamicCandidate& b) {
+                            return a.addr < b.addr;
+                        })) {
+        std::sort(dyn_candidates_.begin(), dyn_candidates_.end(),
+                  [](const DynamicCandidate& a, const DynamicCandidate& b) {
+                      return a.addr < b.addr;
+                  });
+    }
+
+    std::vector<DynamicCandidate> next;
+    next.reserve(dyn_candidates_.size());
+    std::vector<uint8_t> buf(kChunk + L);
+
+    size_t i = 0;
+    const size_t n = dyn_candidates_.size();
+    while (i < n) {
+        const uint64_t chunk_start = dyn_candidates_[i].addr;
+        ssize_t got = mem.read(chunk_start, buf.data(), kChunk + L - 1);
+        if (got <= 0) {
+            // El bloque no es legible (proceso re-ejecutado, region
+            // desmapeada): se descarta este candidato y se reintenta con el
+            // siguiente.
+            ++i;
+            continue;
+        }
+        const size_t avail = (size_t)got;
+        // Si la lectura fue parcial (cruzo un hueco hacia otra region), el
+        // limite del bloque es lo realmente leido: los candidatos mas alla
+        // quedan para un bloque nuevo que empiece en el siguiente (asi no se
+        // pierden candidatos de regiones separadas por un hueco).
+        const uint64_t limit =
+            chunk_start + std::min<size_t>(kChunk, avail);
+
+        while (i < n && dyn_candidates_[i].addr < limit) {
+            DynamicCandidate& c = dyn_candidates_[i];
+            const size_t off = (size_t)(c.addr - chunk_start);
+            if (off + L > avail) {
+                // Ya no es legible (proceso re-ejecutado, region desmapeada).
+                ++i;
+                continue;
+            }
+            const uint8_t* win = buf.data() + off;
+            bool keep = false;
+            if (compare_prev) {
+                const bool changed = dynamic_window_changed(win, base, c.prev_wild);
+                keep = (filter == Filter::CHANGED) ? changed : !changed;
+            } else {
+                // EXACT contra el patron nuevo (newspec obligatorio).
+                keep = pattern_window_matches(win, pat);
+            }
+            if (keep) {
+                // El valor 'anterior' pasa a ser el actual: recapturar los
+                // bytes de las posiciones '?' (mismo criterio que el escaner
+                // numerico, que guarda c.prev = cur).
+                if (!base.wild_pos.empty()) {
+                    c.prev_wild.clear();
+                    c.prev_wild.reserve(base.wild_pos.size());
+                    for (size_t p : base.wild_pos) c.prev_wild.push_back(win[p]);
+                } else {
+                    c.prev_wild.clear();
+                }
+                next.push_back(std::move(c));
+            }
+            ++i;
+        }
+    }
+
+    dyn_candidates_.swap(next);
+    if (newspec) dyn_spec_ = *newspec;
 }
 
 void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
@@ -78,8 +195,19 @@ void Scanner::next_scan(Memory& mem, DataType type, Filter filter,
         const uint64_t chunk_start = candidates_[i].addr;
         const uint64_t window = kChunk + (w - 1);
         ssize_t got = mem.read(chunk_start, buf.data(), window);
-        const size_t avail = got > 0 ? (size_t)got : 0;
-        const uint64_t limit = chunk_start + kChunk;
+        if (got <= 0) {
+            // El bloque no es legible (el proceso re-ejecuto, ASLR cambio, o
+            // la region se desmapeo): se descarta este candidato y se
+            // reintenta con el siguiente.
+            ++i;
+            continue;
+        }
+        const size_t avail = (size_t)got;
+        // Lectura parcial (hueco hacia otra region): el limite del bloque es
+        // lo realmente leido; los candidatos mas alla se releen en un bloque
+        // nuevo (no se pierden candidatos de regiones separadas por huecos).
+        const uint64_t limit =
+            chunk_start + std::min<size_t>(kChunk, avail);
 
         while (i < n && candidates_[i].addr < limit) {
             Candidate& c = candidates_[i];

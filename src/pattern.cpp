@@ -37,6 +37,15 @@ bool parse_pattern(const std::string& text, BytePattern& out) {
         return false;
     }
 
+    // Limite de seguridad compartido con los strings del escaner First/Next
+    // (ver kMaxDynamicLength): un patron mas largo no tiene sentido en un
+    // analizador de memoria de bajo consumo y encarece cada candidato.
+    if (clean.size() > kMaxDynamicLength * 2) {
+        out.error = "patron demasiado largo (maximo " +
+                    std::to_string(kMaxDynamicLength) + " bytes)";
+        return false;
+    }
+
     auto hexv = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
         if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -78,14 +87,7 @@ PatternScanResult scan_pattern(Memory& mem, const std::vector<Region>& regions,
     // resultados. El orden de las direcciones visitadas es identico al de
     // la implementacion anterior.
     for_each_window(mem, regions, w, [&](const uint8_t* win, uint64_t addr) {
-        bool ok = true;
-        for (size_t j = 0; j < w; ++j) {
-            if (pat.mask[j] && win[j] != pat.bytes[j]) {
-                ok = false;
-                break;
-            }
-        }
-        if (ok) {
+        if (pattern_window_matches(win, pat)) {
             res.hits.push_back(addr);
             if (res.hits.size() >= kMaxHits) {
                 res.truncated = true;

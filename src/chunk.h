@@ -39,8 +39,11 @@ inline constexpr size_t kChunkBytes = 4u * 1024u * 1024u;
 // recorren las posiciones de 8 bytes sin solapamiento). Con stride = 1 el
 // comportamiento es exactamente el historico: ventana a ventana con
 // solapamiento de w-1 bytes entre bloques.
-template <typename Fn>
-void for_each_window(Memory& mem, const std::vector<Region>& regions,
+// 'Mem' es generico para poder probar el recorrido (incluido el overlap en
+// los limites de bloque) con un fake en los tests unitarios; los llamadores
+// reales pasan un Memory& y el parametro se deduce a Memory.
+template <typename Mem, typename Fn>
+void for_each_window(Mem& mem, const std::vector<Region>& regions,
                      size_t window_size, size_t stride, Fn&& callback) {
     if (window_size == 0) return;
     const size_t w = window_size;
@@ -91,8 +94,8 @@ void for_each_window(Memory& mem, const std::vector<Region>& regions,
 }
 
 // Compatibilidad: la version sin stride equivale a stride = 1.
-template <typename Fn>
-void for_each_window(Memory& mem, const std::vector<Region>& regions,
+template <typename Mem, typename Fn>
+void for_each_window(Mem& mem, const std::vector<Region>& regions,
                      size_t window_size, Fn&& callback) {
     for_each_window(mem, regions, window_size, 1, callback);
 }

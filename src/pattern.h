@@ -31,6 +31,41 @@ struct BytePattern {
 // ("488B05????"). "??" = wildcard. Devuelve false y rellena error si falla.
 bool parse_pattern(const std::string& text, BytePattern& out);
 
+// Limite de seguridad para la longitud de un valor dinamico (string o patron
+// de bytes) en el escaner First/Next. Un patron mas largo se rechaza: evita
+// estructuras enormes por candidato y escaneos lentos en el Chromebook.
+inline constexpr size_t kMaxDynamicLength = 4096;
+
+// true si una ventana de bytes coincide con el patron (mask[j] = true ->
+// byte exacto; mask[j] = false -> wildcard). Funcion pura, compartida por
+// scan_pattern y por el escaner First/Next de valores dinamicos.
+inline bool pattern_window_matches(const uint8_t* win, const BytePattern& pat) {
+    for (size_t j = 0; j < pat.bytes.size(); ++j)
+        if (pat.mask[j] && win[j] != pat.bytes[j]) return false;
+    return true;
+}
+
+// Convierte un texto a un patron de bytes exactos (sin wildcards). Se
+// codifica como bytes crudos del texto (ASCII / UTF-8 de un solo byte, tal
+// cual se almacena en memoria); no se hace ninguna conversion Unicode.
+// Rellena err si el texto esta vacio o excede kMaxDynamicLength.
+inline BytePattern pattern_from_text(const std::string& text, std::string& err) {
+    BytePattern p;
+    if (text.empty()) {
+        err = "string vacia";
+        return p;
+    }
+    if (text.size() > kMaxDynamicLength) {
+        err = "string demasiado larga (maximo " +
+              std::to_string(kMaxDynamicLength) + " bytes)";
+        return p;
+    }
+    p.bytes.assign(text.begin(), text.end());
+    p.mask.assign(text.size(), true);
+    p.valid = true;
+    return p;
+}
+
 struct PatternScanResult {
     std::vector<uint64_t> hits; // direcciones donde empieza el patron
     bool truncated = false;     // true si se alcanzo el limite de resultados
