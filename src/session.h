@@ -18,6 +18,7 @@
 
 #include "address_table.h"
 #include "memory.h"
+#include "pointer.h"
 #include "scanner.h"
 #include "types.h"
 
@@ -60,11 +61,22 @@ public:
     AddressTable& table() { return table_; }
     const AddressTable& table() const { return table_; }
 
+    // --- Pointer Scanner -------------------------------------------------
+    // Ultimo resultado de 'pointer scan'. Pertenecen al proceso objetivo
+    // actual: al cambiar de proceso o hacer detach se descartan.
+    const std::optional<PointerScanResult>& pointer_result() const {
+        return last_pointer_;
+    }
+    void set_pointer_result(PointerScanResult r) {
+        last_pointer_ = std::move(r);
+    }
+
 private:
     std::optional<int> pid_;
     Scanner scanner_;
     DataType scan_type_ = DataType::I32;
     AddressTable table_;
+    std::optional<PointerScanResult> last_pointer_;
 };
 
 } // namespace mt

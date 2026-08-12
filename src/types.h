@@ -15,7 +15,7 @@
 namespace mt {
 
 enum class DataType {
-    I8, U8, I16, U16, I32, U32, I64, U64, F32, F64
+    I8, U8, I16, U16, I32, U32, I64, U64, F32, F64, PTR
 };
 
 inline size_t type_size(DataType t) {
@@ -27,8 +27,12 @@ inline size_t type_size(DataType t) {
         case DataType::I32:
         case DataType::U32:
         case DataType::F32: return 4;
-        default:            return 8;
+        case DataType::I64:
+        case DataType::U64:
+        case DataType::F64:
+        case DataType::PTR: return 8;
     }
+    return 8;
 }
 
 inline bool type_is_float(DataType t) {
@@ -47,6 +51,7 @@ inline const char* type_name(DataType t) {
         case DataType::U64: return "uint64";
         case DataType::F32: return "float";
         case DataType::F64: return "double";
+        case DataType::PTR: return "pointer";
     }
     return "?";
 }
@@ -64,6 +69,7 @@ inline bool parse_type(const std::string& s, DataType& out) {
         {"u64", DataType::U64},  {"uint64", DataType::U64},{"ulong", DataType::U64},
         {"f32", DataType::F32},  {"float", DataType::F32},
         {"f64", DataType::F64},  {"double", DataType::F64},
+        {"ptr", DataType::PTR},  {"pointer", DataType::PTR},
     };
     for (const auto& a : kAliases)
         if (s == a.name) { out = a.t; return true; }
@@ -91,8 +97,9 @@ inline int64_t value_as_int(Value v, DataType t) {
         case DataType::U16: return (uint16_t)v.bits;
         case DataType::I32: return (int32_t)(uint32_t)v.bits;
         case DataType::U32: return (uint32_t)v.bits;
-        case DataType::I64: return (int64_t)v.bits;
-        case DataType::U64: return (int64_t)v.bits;
+        case DataType::I64:
+        case DataType::U64:
+        case DataType::PTR: return (int64_t)v.bits;
         default:            return 0;
     }
 }
@@ -102,7 +109,8 @@ inline uint64_t value_as_uint(Value v, DataType t) {
         case DataType::U8:  return (uint8_t)v.bits;
         case DataType::U16: return (uint16_t)v.bits;
         case DataType::U32: return (uint32_t)v.bits;
-        case DataType::U64: return v.bits;
+        case DataType::U64:
+        case DataType::PTR: return v.bits;
         default:            return (uint64_t)value_as_int(v, t);
     }
 }
@@ -202,6 +210,7 @@ inline bool parse_value(const std::string& text, DataType t, Value& out) {
             out.bits = (uint64_t)v;
             break;
         case DataType::U64:
+        case DataType::PTR:
             if (v < 0) return false;
             out.bits = (uint64_t)v;
             break;
@@ -225,6 +234,9 @@ inline std::string value_to_string(Value v, DataType t) {
             return buf;
         case DataType::U64:
             snprintf(buf, sizeof buf, "%llu", (unsigned long long)v.bits);
+            return buf;
+        case DataType::PTR:
+            snprintf(buf, sizeof buf, "0x%016llx", (unsigned long long)v.bits);
             return buf;
         default:
             snprintf(buf, sizeof buf, "%lld", (long long)value_as_int(v, t));

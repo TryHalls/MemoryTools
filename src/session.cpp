@@ -13,6 +13,7 @@ bool Session::attach(int target, std::string& err) {
     if (pid_ && *pid_ != target) {
         scanner_.clear();          // resultados del PID anterior
         table_.mark_all_stale();   // direcciones absolutas ya no son fiables
+        last_pointer_.reset();     // cadenas de punteros del PID anterior
     }
     pid_ = target;
     return true;
@@ -21,6 +22,7 @@ bool Session::attach(int target, std::string& err) {
 void Session::detach() {
     pid_.reset();
     scanner_.clear();
+    last_pointer_.reset();
 }
 
 bool Session::with_memory(const std::function<void(Memory&)>& fn, std::string& err) {

@@ -30,18 +30,23 @@ mkfifo "$FIFO"
 OBJ_PID=""
 OBJ2_PID=""
 MT_PID=""
+MT2_PID=""
 TF=""
+TF2=""
 PT_PID=""
 PT=""
 cleanup() {
     exec 3>&- 2>/dev/null || true
+    exec 4>&- 2>/dev/null || true
     [ -n "$MT_PID" ] && kill "$MT_PID" 2>/dev/null || true
+    [ -n "$MT2_PID" ] && kill "$MT2_PID" 2>/dev/null || true
     [ -n "$OBJ_PID" ] && kill "$OBJ_PID" 2>/dev/null || true
     [ -n "$OBJ2_PID" ] && kill "$OBJ2_PID" 2>/dev/null || true
     [ -n "$PT_PID" ] && kill "$PT_PID" 2>/dev/null || true
     [ -n "$TF" ] && rm -f "$TF"
+    [ -n "$TF2" ] && rm -f "$TF2"
     [ -n "$PT" ] && rm -f "$PT"
-    rm -f "$LOG" "$LOG2" "$OUT" "$FIFO"
+    rm -f "$LOG" "$LOG2" "$OUT" "$OUT2" "$FIFO" "$FIFO2"
 }
 trap cleanup EXIT
 
@@ -387,6 +392,112 @@ contains DT 'edges_truncated=1' \
 contains DT "$NODE1 $PTARGET" \
     || { echo "$DT"; fail "el nivel truncado perdio los resultados ya obtenidos"; }
 echo "OK: nivel truncado por limite de aristas conservando resultados"
+
+echo
+echo "== POINTER CLI: pointer scan / results / add con la Address Table =="
+FIFO2=$(mktemp -u)
+OUT2=$(mktemp)
+rm -f "$FIFO2"
+mkfifo "$FIFO2"
+"$BIN" "$PTPID" < "$FIFO2" > "$OUT2" 2>&1 &
+MT2_PID=$!
+exec 4>"$FIFO2"
+feed2() { printf '%s\n' "$@" >&4; }
+wait_out2() {
+    local pat="$1" tries="${2:-40}"
+    for _ in $(seq 1 "$tries"); do
+        grep -q "$pat" "$OUT2" && return 0
+        sleep 0.3
+    done
+    return 1
+}
+wait_out2 'mt(' || fail "la sesion pointer CLI no arranco"
+
+echo "-- pointer results sin scan previo"
+feed2 'pointer results'
+wait_out2 'No hay un pointer scan previo' \
+    || fail "pointer results sin scan no avisa"
+
+echo "-- target invalido (fuera de cualquier region)"
+feed2 'pointer scan 0x1'
+wait_out2 'no pertenece a ninguna region' \
+    || fail "pointer scan con target invalido no avisa"
+
+echo "-- depth=0 y depth=8 rechazados"
+feed2 "pointer scan $PTARGET depth=0"
+wait_out2 'depth debe estar entre 1 y 7' || fail "depth=0 no validado"
+feed2 "pointer scan $PTARGET depth=8"
+wait_out2 'depth debe estar entre 1 y 7' || fail "depth=8 no validado"
+
+echo "-- depth=1: resumen + results con Node1"
+feed2 "pointer scan $PTARGET depth=1"
+wait_out2 'Pointer Scan:' || fail "pointer scan depth=1 no respondio"
+sleep 0.5
+BLOCKP1=$(tail -n 8 "$OUT2")
+contains BLOCKP1 'depth: 1' || { echo "$BLOCKP1"; fail "pointer scan no muestra depth 1"; }
+feed2 'pointer results'
+wait_out2 'depth 1:' || fail "pointer results (depth=1) no llego"
+sleep 0.5
+BLOCKR1=$(tail -n 30 "$OUT2")
+contains BLOCKR1 "$NODE1" || { echo "$BLOCKR1"; fail "depth=1 no muestra Node1"; }
+
+echo "-- depth=2: reconstruye Node2 -> Node1 -> TARGET"
+feed2 "pointer scan $PTARGET depth=2"
+wait_out2 'Pointer Scan:' || fail "pointer scan depth=2 no respondio"
+feed2 'pointer results'
+wait_out2 'depth 2:' || fail "pointer results (depth=2) no llego"
+sleep 0.5
+BLOCKR2=$(tail -n 40 "$OUT2")
+contains BLOCKR2 "$NODE2 -> $NODE1" \
+    || { echo "$BLOCKR2"; fail "depth=2 no reconstruye Node2->Node1"; }
+
+echo "-- depth=3: reconstruye Node3 -> Node2 -> Node1 -> TARGET"
+feed2 "pointer scan $PTARGET depth=3"
+wait_out2 'Pointer Scan:' || fail "pointer scan depth=3 no respondio"
+feed2 'pointer results'
+wait_out2 'depth 3:' || fail "pointer results (depth=3) no llego"
+sleep 0.5
+BLOCKR3=$(tail -n 60 "$OUT2")
+contains BLOCKR3 "$NODE3 -> $NODE2 -> $NODE1 -> $PTARGET" \
+    || { echo "$BLOCKR3"; fail "depth=3 no reconstruye la cadena completa"; }
+echo "OK: pointer CLI depth 1/2/3 reconstruye la cadena"
+
+echo "-- pointer add 0 -> tabla (type pointer); indice invalido avisado"
+feed2 'pointer add 0'
+wait_out2 'anadida desde la cadena 0' || fail "pointer add 0 no respondio"
+feed2 'pointer add 99'
+wait_out2 'fuera de rango' || fail "pointer add con indice invalido no avisa"
+feed2 'table'
+wait_out2 "$NODE3" || fail "la tabla no muestra la entrada pointer"
+sleep 0.5
+BLOCKTAB=$(tail -n 8 "$OUT2")
+contains BLOCKTAB 'pointer' || { echo "$BLOCKTAB"; fail "la entrada no tiene tipo 'pointer'"; }
+echo "OK: pointer add 0 -> entrada (root=$NODE3, type=pointer)"
+
+echo "-- persistencia: save / clear / load de la entrada pointer"
+TF2=$(mktemp)
+feed2 "table save $TF2"
+wait_out2 'guardada' || fail "table save (pointer) no respondio"
+grep -q 'pointer 1 "' "$TF2" || { echo "FALLO: archivo de tabla pointer incorrecto:"; cat "$TF2"; exit 1; }
+feed2 'table clear'
+wait_out2 'vaciada' || fail "table clear no respondio"
+feed2 "table load $TF2"
+wait_out2 'cargada' || fail "table load (pointer) no respondio"
+feed2 'table'
+wait_out2 "$NODE3" || fail "la entrada pointer no se restauro tras load"
+rm -f "$TF2"
+TF2=""
+echo "OK: persistencia de la entrada pointer (save/clear/load)"
+
+feed2 'quit'
+sleep 0.5
+exec 4>&-
+MT2_PID=""
+rm -f "$FIFO2" "$OUT2"
+FIFO2=""
+OUT2=""
+
+echo "OK: Pointer CLI completo (scan/results/add/table/save/clear/load)"
 
 kill "$PT_PID" 2>/dev/null || true
 PT_PID=""

@@ -34,7 +34,7 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Escritura de memoria autorizada (`set`) | ✅ (ETAPA 17, versión mínima) |
 | Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
 | Address Table (`table`, persistente) | ✅ (ETAPA 16, primera versión) |
-| Pointer Scanner (core, sin CLI aún) | ✅ (ETAPA 15, motor listo) |
+| Pointer Scanner (core + CLI) | ✅ (ETAPA 15, motor + comandos) |
 | GUI | ⏳ siguiente etapa |
 
 ## Requisitos
@@ -156,12 +156,17 @@ table read [idx]                     Leer/actualizar el valor actual
 table set <idx> <valor>              Escribir un nuevo valor (tipo de la entrada)
 table toggle <idx> | remove <idx>    Activar-desactivar / eliminar
 table clear | save <f> | load <f>    Vaciar / guardar / cargar
+pointer scan <dir> [depth=N] [code]  Buscar cadenas de punteros hacia una direccion
+pointer results [n]                  Mostrar cadenas del ultimo escaneo
+pointer chains [n]                   Alias de 'pointer results'
+pointer add <idx>                    Anadir la base de una cadena a la tabla
 help | quit
 ```
 
-Tipos: `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64` (alias: `int`, `float`,
-`double`, `byte`, ...). Los valores numéricos se escriben en decimal o con
-prefijo `0x` para hexadecimal; las direcciones se aceptan con o sin `0x`.
+Tipos: `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr` (alias: `int`, `float`,
+`double`, `byte`, `pointer`, ...). Los valores numéricos se escriben en
+decimal o con prefijo `0x` para hexadecimal; las direcciones se aceptan con o
+sin `0x`.
 
 ## Address Table
 
@@ -257,7 +262,54 @@ a 8 bytes) y un `FlatHashSet` plano (sin `std::unordered_set`) para
 mantener el consumo bajo: ~8 MiB por nivel más buffer en el peor caso.
 
 El módulo **no** hace attach/detach: recibe un `Memory` ya abierto (la
-Session/CLI se encargará del ciclo ptrace).
+Session/CLI se encarga del ciclo ptrace).
+
+### Comandos CLI (integración con Session y Address Table)
+
+```
+pointer scan <direccion> [depth=N] [code]
+pointer results [n]
+pointer chains [n]        # alias de results
+pointer add <indice>
+```
+
+- `pointer scan` valida que la dirección pertenezca a una región legible,
+  acepta `depth=` entre 1 y 7 (por defecto 3) y `code` para incluir regiones
+  ejecutables, y hace **un solo attach** alrededor de todo el escaneo
+  (`Session::with_memory`). Muestra un resumen (target, depth, levels,
+  chains) y avisa si se truncó por límite de aristas o de cadenas.
+- `pointer results` muestra las primeras cadenas (10 por defecto) del último
+  escaneo en formato `0xA -> 0xB -> TARGET`; las cadenas se reconstruyen sin
+  volver a escanear (frontera incremental, ver arriba).
+- `pointer add <idx>` toma la cadena `idx` del último escaneo y añade su
+  **base** (`nodes[0]`) a la Address Table con tipo `pointer` y la cadena
+  completa como descripción.
+
+```text
+mt(1234)> pointer scan 0x7f1234567890 depth=3
+Pointer Scan:
+target: 0x00007f1234567890
+depth: 3
+levels: 3
+chains: 427
+mt(1234)> pointer results 2
+[0] depth 3:
+0x000055a92c9ab200 -> 0x000055a92c9ab1e0 -> 0x000055a92c9ab1c0 -> 0x00007f1234567890
+[1] depth 1:
+0x00007ffd12345678 -> 0x00007f1234567890
+mt(1234)> pointer add 0
+Entrada 0 anadida desde la cadena 0:
+  0x000055a92c9ab200 (pointer)
+  0x000055a92c9ab200 -> 0x000055a92c9ab1e0 -> 0x000055a92c9ab1c0 -> 0x00007f1234567890
+```
+
+**Limitaciones de la versión 1 (importante):** la Address Table guarda
+**direcciones absolutas**. `pointer add` añade `nodes[0]` tal cual: es
+informativo (registra qué cadena llevaba a ese valor), pero **no** convierte
+la entrada en un puntero dinámico que sobreviva a un reinicio de ASLR. Si el
+proceso se reinicia, las direcciones de la cadena apuntarán a otra cosa o a
+nada. Tampoco hay offsets (`base + offset -> ptr`) en esta versión: el motor
+solo encuentra cadenas de punteros directos.
 
 ### Programa de prueba `pointer_test`
 
@@ -334,6 +386,7 @@ MemoryTool/
 │   ├── test_memory.cpp # Tests unitarios de parse_maps_line/region_at
 │   ├── test_address_table.cpp  # Tests unitarios de AddressTable
 │   ├── test_pointer.cpp # Tests unitarios del Pointer Scanner (parte pura)
+│   ├── test_pointer_cmd.cpp  # Tests de la integracion pointer + CLI + tabla
 │   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)
@@ -372,9 +425,13 @@ y `build/test_address_table` (add/remove/clear/get, enabled, save/load con
 round-trip, descripciones con espacios y comillas, tipos, direcciones de 64
 bits) y `build/test_pointer` (clasificación y selección de regiones,
 `FlatHashSet`, y reconstrucción de cadenas con datos sintéticos:
-profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites). Cada
-binario devuelve 0 si todo pasa y != 0 si hay fallos; también pueden
-compilarse y ejecutarse a mano:
+profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites) y
+`build/test_pointer_cmd` (parsing/validación de `pointer scan` —depth y
+opciones—, descripción textual de cadenas, `Session` conservando el último
+`PointerScanResult`, `pointer add` creando la entrada tipo `pointer`, y
+persistencia de ese tipo en el formato de tabla v1). Cada binario devuelve 0
+si todo pasa y != 0 si hay fallos; también pueden compilarse y ejecutarse a
+mano:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_types.cpp -o build/test_types
@@ -385,6 +442,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_address_table.cpp src/address
 ./build/test_address_table
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer.cpp src/pointer.cpp src/memory.cpp -o build/test_pointer
 ./build/test_pointer
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer_cmd.cpp \
+    src/command.cpp src/session.cpp src/scanner.cpp src/memory.cpp \
+    src/pattern.cpp src/process.cpp src/address_table.cpp src/pointer.cpp -o build/test_pointer_cmd
+./build/test_pointer_cmd
 ```
 
 ### Test de extremo a extremo (proceso real)
@@ -403,7 +464,11 @@ pattern scanner con y sin wildcards, los límites de candidatos (aviso a
 set verificado en el proceso → save → clear → load → toggle) y el Pointer
 Scanner contra `pointer_test` (depth 1/2/3 reconstruyendo
 `Node3->Node2->Node1->TARGET`, ciclo controlado sin cuelgues y sin cadenas
-cíclicas, y truncado por límite de aristas).
+cíclicas, truncado por límite de aristas, y la CLI completa: `pointer scan`
+con depth 1/2/3, `pointer results`, `pointer add` creando una entrada
+`pointer` en la Address Table, y su save/clear/load, además de los errores
+de target inválido, índice inválido, `pointer results` sin escaneo previo y
+`depth=0`/`depth=8`).
 
 ## Hoja de ruta
 
@@ -425,7 +490,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 12 | Strings y bytes | ⏳ (requiere ampliar `types`) |
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
 | 14 | Pattern/AOB Scanner | ✅ |
-| 15 | Pointer Scanner | ◐ (core listo; comandos CLI en la siguiente etapa) |
+| 15 | Pointer Scanner | ✅ (core + CLI, sin offsets aún) |
 | 16 | Address Table | ✅ (primera versión) |
 | 17 | Modificar/restaurar memoria | ◐ (versión mínima: `set`) |
 | 18 | Optimizar velocidad y RAM | ⏳ |

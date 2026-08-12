@@ -19,6 +19,7 @@
 #include "address_table.h"
 #include "memory.h"
 #include "pattern.h"
+#include "pointer.h"
 #include "process.h"
 #include "types.h"
 
@@ -46,7 +47,8 @@ static bool parse_addr(const std::string& s, uint64_t& out) {
 
 static std::string display_value(Value v, DataType t) {
     std::string s = value_to_string(v, t);
-    if (!type_is_float(t)) {
+    // PTR ya se muestra como 0x... (una direccion); no anadir el sufijo hex.
+    if (!type_is_float(t) && t != DataType::PTR) {
         char h[32];
         snprintf(h, sizeof h, "  (0x%0*llx)", (int)(type_size(t) * 2),
                  (unsigned long long)v.bits);
@@ -119,7 +121,7 @@ static CommandResult cmd_help(const CommandArgs&, Session&) {
     printf("Comandos:\n");
     for (const auto& c : commands())
         if (c.usage) printf("  %s\n", c.usage);
-    printf("Tipos: i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 (alias: int, float, double...)\n");
+    printf("Tipos: i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr (alias: int, float, double, byte, pointer...)\n");
     return {};
 }
 
@@ -779,6 +781,188 @@ static CommandResult cmd_table(const CommandArgs& args, Session& s) {
 }
 
 // ---------------------------------------------------------------------------
+// Comando 'pointer': Pointer Scanner integrado con Session y AddressTable.
+//
+//   pointer scan <dir> [depth=N] [code]   buscar cadenas hacia una direccion
+//   pointer results [n]                   mostrar cadenas del ultimo escaneo
+//   pointer chains [n]                    alias de 'pointer results'
+//   pointer add <idx>                     anadir la base de una cadena a la tabla
+
+PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
+    PointerScanArgs out;
+    if (args.empty()) {
+        out.error = "Uso: pointer scan <direccion> [depth=N] [code]";
+        return out;
+    }
+    if (!parse_addr(args[0], out.target)) {
+        out.error = "Direccion invalida: " + args[0];
+        return out;
+    }
+    for (size_t i = 1; i < args.size(); ++i) {
+        const std::string& tok = args[i];
+        if (tok == "code") {
+            out.include_code = true;
+            continue;
+        }
+        if (tok.rfind("depth=", 0) == 0) {
+            const std::string d = tok.substr(6);
+            char* end = nullptr;
+            errno = 0;
+            long v = std::strtol(d.c_str(), &end, 10);
+            if (d.empty() || end == d.c_str() || *end != '\0' ||
+                errno == ERANGE || v < 1 || v > 7) {
+                out.error = "depth debe estar entre 1 y 7 (obtenido: " +
+                            (d.empty() ? "(vacio)" : d) + ")";
+                return out;
+            }
+            out.depth = (int)v;
+            continue;
+        }
+        out.error = "Opcion desconocida: " + tok;
+        return out;
+    }
+    return out;
+}
+
+std::string pointer_chain_description(const std::vector<uint64_t>& nodes) {
+    std::string s;
+    char b[32];
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (i > 0) s += " -> ";
+        snprintf(b, sizeof b, "0x%016llx", (unsigned long long)nodes[i]);
+        s += b;
+    }
+    return s;
+}
+
+static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
+    const PointerScanArgs pa = parse_pointer_scan_args(args);
+    if (!pa.error.empty()) {
+        printf("%s\n", pa.error.c_str());
+        return {};
+    }
+    if (!has_target(s)) return {};
+
+    // El target debe pertenecer a una region legible (comprobacion previa
+    // razonable; el escaneo real ocurre en un solo attach con with_memory).
+    auto regions = parse_maps(s.pid());
+    auto r = region_at(regions, pa.target);
+    if (!r) {
+        printf("La direccion 0x%llx no pertenece a ninguna region.\n",
+               (unsigned long long)pa.target);
+        return {};
+    }
+    if (!r->readable()) {
+        printf("La direccion 0x%llx esta en una region no legible (%s).\n",
+               (unsigned long long)pa.target, r->perms.c_str());
+        return {};
+    }
+
+    PointerScanOptions opts;
+    opts.target = pa.target;
+    opts.max_depth = pa.depth;
+    opts.include_code = pa.include_code;
+
+    PointerScanResult res;
+    std::string err;
+    bool ok = s.with_memory([&](Memory& mem) {
+        res = pointer_scan(mem, regions, opts);
+    }, err);
+    if (!ok) {
+        printf("Error: %s\n", err.c_str());
+        return {};
+    }
+    s.set_pointer_result(std::move(res));
+
+    const PointerScanResult& r2 = s.pointer_result().value();
+    printf("Pointer Scan:\n");
+    printf("target: 0x%016llx\n", (unsigned long long)r2.target);
+    printf("depth: %d\n", opts.max_depth);
+    printf("levels: %d\n", r2.levels);
+    printf("chains: %zu\n", r2.chains.size());
+    if (r2.edges_truncated || r2.chains_truncated) {
+        printf("WARNING: pointer scan truncado\n");
+        if (r2.edges_truncated)
+            printf("- limite de aristas alcanzado (max_edges_per_level)\n");
+        if (r2.chains_truncated)
+            printf("- limite de cadenas alcanzado (max_chains)\n");
+    }
+    return {};
+}
+
+static CommandResult cmd_pointer_results(const CommandArgs& args, Session& s) {
+    if (!s.pointer_result()) {
+        printf("No hay un pointer scan previo; usa 'pointer scan <direccion>' primero.\n");
+        return {};
+    }
+    const PointerScanResult& res = s.pointer_result().value();
+    if (res.chains.empty()) {
+        printf("El ultimo pointer scan no encontro cadenas.\n");
+        return {};
+    }
+    size_t n = 10;
+    if (!args.empty()) n = (size_t)strtoull(args[0].c_str(), nullptr, 10);
+    n = std::min(n, res.chains.size());
+    for (size_t i = 0; i < n; ++i) {
+        printf("[%zu] depth %d:\n", i, res.chains[i].depth);
+        printf("%s\n", pointer_chain_description(res.chains[i].nodes).c_str());
+    }
+    if (n < res.chains.size())
+        printf("... y %zu mas. Usa 'pointer results %zu' para verlas todas.\n",
+               res.chains.size() - n, res.chains.size());
+    return {};
+}
+
+static CommandResult cmd_pointer_add(const CommandArgs& args, Session& s) {
+    if (!s.pointer_result()) {
+        printf("No hay un pointer scan previo; usa 'pointer scan <direccion>' primero.\n");
+        return {};
+    }
+    if (args.empty()) {
+        printf("Uso: pointer add <indice>\n");
+        return {};
+    }
+    size_t idx = 0;
+    if (!parse_index(args[0], idx)) {
+        printf("Indice invalido: %s\n", args[0].c_str());
+        return {};
+    }
+    const PointerScanResult& res = s.pointer_result().value();
+    if (idx >= res.chains.size()) {
+        printf("Indice %zu fuera de rango (hay %zu cadenas).\n", idx,
+               res.chains.size());
+        return {};
+    }
+    const PointerChain& c = res.chains[idx];
+    if (c.nodes.empty()) {
+        printf("La cadena %zu esta vacia.\n", idx);
+        return {};
+    }
+    const uint64_t root = c.nodes[0];
+    const std::string desc = pointer_chain_description(c.nodes);
+    const size_t nidx = s.table().add(root, DataType::PTR, desc);
+    printf("Entrada %zu anadida desde la cadena %zu:\n", nidx, idx);
+    printf("  0x%016llx (pointer)\n", (unsigned long long)root);
+    printf("  %s\n", desc.c_str());
+    return {};
+}
+
+static CommandResult cmd_pointer(const CommandArgs& args, Session& s) {
+    if (args.empty()) {
+        printf("Uso: pointer scan <direccion> [depth=N] [code] | "
+               "pointer results [n] | pointer add <indice>\n");
+        return {};
+    }
+    const std::string& sub = args[0];
+    CommandArgs rest(args.begin() + 1, args.end());
+    if (sub == "scan") return cmd_pointer_scan(rest, s);
+    if (sub == "results" || sub == "chains") return cmd_pointer_results(rest, s);
+    if (sub == "add") return cmd_pointer_add(rest, s);
+    printf("Subcomando de pointer desconocido: %s (usa 'help')\n", sub.c_str());
+    return {};
+}
+
+// ---------------------------------------------------------------------------
 // Tabla de comandos y dispatch
 
 static const CommandDef kCommands[] = {
@@ -812,6 +996,12 @@ static const CommandDef kCommands[] = {
      "  table toggle <idx> | remove <idx>      Activar-desactivar / eliminar\n"
      "  table clear | save <f> | load <f>      Vaciar / guardar / cargar",
      cmd_table},
+    {"pointer",
+     "pointer scan <dir> [depth=N] [code]     Buscar cadenas de punteros hacia una direccion\n"
+     "  pointer results [n]                    Mostrar cadenas del ultimo escaneo\n"
+     "  pointer chains [n]                     Alias de 'pointer results'\n"
+     "  pointer add <idx>                      Anadir la base de una cadena a la tabla",
+     cmd_pointer},
     {"help", "help | quit", cmd_help},
     // Alias ocultos en 'help' (misma funcion que el comando principal).
     {"quit", nullptr, cmd_quit},
