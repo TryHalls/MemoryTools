@@ -23,9 +23,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
 
 g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/test_pointer_cmd.cpp \
-    src/command.cpp src/session.cpp src/scanner.cpp src/memory.cpp \
-    src/pattern.cpp src/process.cpp src/address_table.cpp src/pointer.cpp \
-    src/pointer_resolver.cpp \
+    src/command.cpp src/application.cpp src/session.cpp src/scanner.cpp \
+    src/memory.cpp src/pattern.cpp src/process.cpp src/address_table.cpp \
+    src/pointer.cpp src/pointer_resolver.cpp \
     -o build/test_pointer_cmd
 
 g++ -std=c++17 -O2 -Wall -Wextra -I src \
@@ -37,6 +37,13 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/test_dynamic.cpp \
     src/pattern.cpp src/scanner.cpp src/memory.cpp \
     -o build/test_dynamic
+
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_application.cpp \
+    src/application.cpp src/session.cpp src/scanner.cpp src/pattern.cpp \
+    src/address_table.cpp src/pointer.cpp src/pointer_resolver.cpp \
+    src/memory.cpp \
+    -o build/test_application
 
 ok=1
 echo "== test_types =="
@@ -59,6 +66,9 @@ echo "== test_pointer_v2 =="
 echo
 echo "== test_dynamic =="
 ./build/test_dynamic || ok=0
+echo
+echo "== test_application =="
+./build/test_application || ok=0
 
 if [ "$ok" = 1 ]; then
     echo

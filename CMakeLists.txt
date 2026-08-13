@@ -13,6 +13,7 @@ add_executable(memorytool
   src/main.cpp
   src/session.cpp
   src/command.cpp
+  src/application.cpp
   src/process.cpp
   src/memory.cpp
   src/scanner.cpp

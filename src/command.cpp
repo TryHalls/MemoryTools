@@ -1,10 +1,14 @@
-// command.cpp - Implementacion de la capa de comandos de MemoryTool.
+// command.cpp - Capa de comandos de MemoryTool (frontend CLI).
 //
 // Los handlers reproducen el comportamiento de la antigua CLI monolitica
-// (main.cpp): misma sintaxis, mismos mensajes y mismos resultados. Solo se
-// reestructura donde vive cada responsabilidad.
+// (main.cpp): misma sintaxis, mismos mensajes y mismos resultados. La LOGICA
+// de cada operacion vive en Application (application.cpp): aqui solo se
+// parsea texto, se llama a Application y se formatea/imprime el resultado.
+//
+//   CLI (este archivo) -> Application -> Session -> Core
 #include "command.h"
 
+#include "application.h"
 #include "session.h"
 
 #include <algorithm>
@@ -18,9 +22,7 @@
 #include <string>
 #include <unistd.h>
 
-#include "address_table.h"
 #include "memory.h"
-#include "pattern.h"
 #include "pointer.h"
 #include "pointer_resolver.h"
 #include "process.h"
@@ -29,7 +31,7 @@
 namespace mt {
 
 // ---------------------------------------------------------------------------
-// Utilidades internas (solo usadas por los handlers)
+// Utilidades de la CLI (parsing de texto y formateo; sin logica de core)
 
 static std::vector<std::string> split(const std::string& s) {
     std::istringstream iss(s);
@@ -39,13 +41,70 @@ static std::vector<std::string> split(const std::string& s) {
     return out;
 }
 
-static bool parse_addr(const std::string& s, uint64_t& out) {
+// Valor legible (con sufijo hex) para los mensajes de la CLI.
+static std::string display_value(Value v, DataType t) {
+    std::string s = value_to_string(v, t);
+    // PTR ya se muestra como 0x... (una direccion); no anadir el sufijo hex.
+    if (!type_is_float(t) && t != DataType::PTR) {
+        char h[32];
+        snprintf(h, sizeof h, "  (0x%0*llx)", (int)(type_size(t) * 2),
+                 (unsigned long long)v.bits);
+        s += h;
+    }
+    return s;
+}
+
+static void hexdump(uint64_t addr, const uint8_t* p, size_t n) {
+    for (size_t off = 0; off < n; off += 16) {
+        printf("%016llx  ", (unsigned long long)(addr + off));
+        const size_t row = std::min<size_t>(16, n - off);
+        for (size_t i = 0; i < 16; ++i) {
+            if (i < row)
+                printf("%02x ", p[off + i]);
+            else
+                printf("   ");
+            if (i == 7) printf(" ");
+        }
+        printf(" |");
+        for (size_t i = 0; i < row; ++i) {
+            uint8_t c = p[off + i];
+            printf("%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
+        }
+        printf("|\n");
+    }
+}
+
+// Mensaje comun cuando un comando necesita proceso objetivo. Devuelve true
+// si la sesion tiene proceso seleccionado.
+static bool has_target(const Session& s) {
+    if (s.has_pid()) return true;
+    printf("Primero selecciona un proceso (attach <pid>).\n");
+    return false;
+}
+
+// Parsea un indice decimal (para 'results'/'table').
+static bool parse_index(const std::string& s, size_t& out) {
     if (s.empty()) return false;
-    errno = 0;
     char* end = nullptr;
-    int base = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
-    out = strtoull(s.c_str(), &end, base);
-    return end != s.c_str() && *end == '\0' && errno != ERANGE;
+    unsigned long long v = std::strtoull(s.c_str(), &end, 10);
+    if (end == s.c_str() || *end != '\0') return false;
+    out = (size_t)v;
+    return true;
+}
+
+// Une tokens como descripcion. Si el resultado va entre comillas dobles
+// ("descripcion con espacios"), las quita: la CLI divide por espacios, asi
+// que las comillas llegan como parte del primer/ultimo token.
+static std::string join_desc(const CommandArgs& args, size_t from) {
+    std::string d;
+    for (size_t i = from; i < args.size(); ++i) {
+        if (i > from) d += ' ';
+        d += args[i];
+    }
+    if (d.size() >= 2 && d.front() == '"' && d.back() == '"') {
+        d = d.substr(1, d.size() - 2);
+    }
+    return d;
 }
 
 // --- Valores dinamicos (string / bytes) -----------------------------------
@@ -113,98 +172,12 @@ static std::string dynamic_pattern_text(const DynamicScanSpec& spec) {
     return "[" + s + "]";
 }
 
-static CommandResult cmd_first_dynamic(DataType type, const std::string& text,
-                                       Session& s) {
-    std::string err;
-    BytePattern pat = build_dynamic_pattern(type, text, err);
-    if (!pat.valid) {
-        printf("Patron invalido (%s): %s\n", type_name(type), err.c_str());
-        return {};
-    }
-    const DynamicScanSpec spec = make_dynamic_spec(type, std::move(pat));
-    s.set_scan_type(type);
-
-    std::string err2;
-    bool ok = s.with_memory([&](Memory& mem) {
-        auto regions = parse_maps(s.pid());
-        s.scanner().first_scan_dynamic(mem, regions, spec);
-    }, err2);
-    if (!ok) {
-        printf("Error: %s\n", err2.c_str());
-        return {};
-    }
-    printf("First Scan: %zu coincidencias (%s, len %zu)\n",
-           s.scanner().count(), type_name(type), spec.length());
-    if (s.scanner().truncated())
+// Mensajes comunes de un ScanOutcome (AVISOS de limites).
+static void print_scan_warnings(const ScanOutcome& o) {
+    if (o.truncated)
         printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
-    if (s.scanner().warned())
+    if (o.warned)
         printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
-    return {};
-}
-
-static std::string display_value(Value v, DataType t) {
-    std::string s = value_to_string(v, t);
-    // PTR ya se muestra como 0x... (una direccion); no anadir el sufijo hex.
-    if (!type_is_float(t) && t != DataType::PTR) {
-        char h[32];
-        snprintf(h, sizeof h, "  (0x%0*llx)", (int)(type_size(t) * 2),
-                 (unsigned long long)v.bits);
-        s += h;
-    }
-    return s;
-}
-
-static void hexdump(uint64_t addr, const uint8_t* p, size_t n) {
-    for (size_t off = 0; off < n; off += 16) {
-        printf("%016llx  ", (unsigned long long)(addr + off));
-        const size_t row = std::min<size_t>(16, n - off);
-        for (size_t i = 0; i < 16; ++i) {
-            if (i < row)
-                printf("%02x ", p[off + i]);
-            else
-                printf("   ");
-            if (i == 7) printf(" ");
-        }
-        printf(" |");
-        for (size_t i = 0; i < row; ++i) {
-            uint8_t c = p[off + i];
-            printf("%c", (c >= 0x20 && c < 0x7f) ? (char)c : '.');
-        }
-        printf("|\n");
-    }
-}
-
-// Mensaje comun cuando un comando necesita proceso objetivo. Devuelve true
-// si la sesion tiene proceso seleccionado.
-static bool has_target(const Session& s) {
-    if (s.has_pid()) return true;
-    printf("Primero selecciona un proceso (attach <pid>).\n");
-    return false;
-}
-
-// Parsea un indice decimal (para 'results'/'table').
-static bool parse_index(const std::string& s, size_t& out) {
-    if (s.empty()) return false;
-    char* end = nullptr;
-    unsigned long long v = std::strtoull(s.c_str(), &end, 10);
-    if (end == s.c_str() || *end != '\0') return false;
-    out = (size_t)v;
-    return true;
-}
-
-// Une tokens como descripcion. Si el resultado va entre comillas dobles
-// ("descripcion con espacios"), las quita: la CLI divide por espacios, asi
-// que las comillas llegan como parte del primer/ultimo token.
-static std::string join_desc(const CommandArgs& args, size_t from) {
-    std::string d;
-    for (size_t i = from; i < args.size(); ++i) {
-        if (i > from) d += ' ';
-        d += args[i];
-    }
-    if (d.size() >= 2 && d.front() == '"' && d.back() == '"') {
-        d = d.substr(1, d.size() - 2);
-    }
-    return d;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,21 +218,21 @@ static CommandResult cmd_attach(const CommandArgs& args, Session& s) {
     }
     auto target = resolve_target(args[0]);
     if (!target) return {};
-    // Comprobar si el cambio de proceso obliga a descartar resultados.
-    const bool switching = s.has_pid() && s.pid() != *target;
-    std::string err;
-    if (!s.attach(*target, err)) {
-        printf("No se pudo acceder al proceso %d: %s\n", *target, err.c_str());
+    Application app(s);
+    AttachOutcome o = app.attach(*target);
+    if (!o.ok) {
+        printf("No se pudo acceder al proceso %d: %s\n", *target, o.error.c_str());
         return {};
     }
-    if (switching)
+    if (o.switched)
         printf("Resultados anteriores descartados (cambio de proceso).\n");
     printf("Proceso objetivo: %d\n", *target);
     return {};
 }
 
 static CommandResult cmd_detach(const CommandArgs&, Session& s) {
-    s.detach();
+    Application app(s);
+    app.detach();
     printf("Proceso objetivo eliminado.\n");
     return {};
 }
@@ -283,6 +256,7 @@ static CommandResult cmd_first(const CommandArgs& args, Session& s) {
                "     first \"<texto>\" string | first <hex...> bytes|pattern\n");
         return {};
     }
+    Application app(s);
 
     // first unknown [tipo]: escaneo numerico de valor desconocido (nunca
     // dinamico, aunque el ultimo token parezca un tipo).
@@ -290,21 +264,14 @@ static CommandResult cmd_first(const CommandArgs& args, Session& s) {
         DataType type = DataType::I32;
         if (args.size() >= 2 && parse_type(args[1], type)) {}
         s.set_scan_type(type);
-        std::string err;
-        bool ok = s.with_memory([&](Memory& mem) {
-            auto regions = parse_maps(s.pid());
-            s.scanner().first_scan(mem, regions, type, std::nullopt);
-        }, err);
-        if (!ok) {
-            printf("Error: %s\n", err.c_str());
+        ScanOutcome o = app.first_scan(type, std::nullopt);
+        if (!o.ok) {
+            printf("Error: %s\n", o.error.c_str());
             return {};
         }
         printf("Escaneo 'unknown' completado (%zu posiciones legibles).\n",
                s.scanner().count());
-        if (s.scanner().truncated())
-            printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
-        if (s.scanner().warned())
-            printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
+        print_scan_warnings(o);
         return {};
     }
 
@@ -312,37 +279,42 @@ static CommandResult cmd_first(const CommandArgs& args, Session& s) {
     const DataType dynt = dynamic_type_token(args.back());
     if (type_is_dynamic(dynt)) {
         const std::string text = join_strip_quotes(args, args.size() - 1);
-        return cmd_first_dynamic(dynt, text, s);
+        std::string err;
+        BytePattern pat = build_dynamic_pattern(dynt, text, err);
+        if (!pat.valid) {
+            printf("Patron invalido (%s): %s\n", type_name(dynt), err.c_str());
+            return {};
+        }
+        const DynamicScanSpec spec = make_dynamic_spec(dynt, std::move(pat));
+        s.set_scan_type(dynt);
+        ScanOutcome o = app.first_scan_dynamic(spec);
+        if (!o.ok) {
+            printf("Error: %s\n", o.error.c_str());
+            return {};
+        }
+        printf("First Scan: %zu coincidencias (%s, len %zu)\n",
+               s.scanner().count(), type_name(dynt), spec.length());
+        print_scan_warnings(o);
+        return {};
     }
 
     // Camino numerico (sin cambios): first <valor> [tipo].
     DataType type = DataType::I32;
-    std::optional<Value> target;
     if (args.size() >= 2 && parse_type(args.back(), type)) {}
     Value v;
     if (!parse_value(args[0], type, v)) {
         printf("Valor invalido: %s (tipo %s)\n", args[0].c_str(), type_name(type));
         return {};
     }
-    target = v;
     s.set_scan_type(type);
-
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        auto regions = parse_maps(s.pid());
-        s.scanner().first_scan(mem, regions, type, target);
-    }, err);
-    if (!ok) {
-        printf("Error: %s\n", err.c_str());
+    ScanOutcome o = app.first_scan(type, v);
+    if (!o.ok) {
+        printf("Error: %s\n", o.error.c_str());
         return {};
     }
-
     printf("First Scan: %zu coincidencias (%s = %s)\n", s.scanner().count(),
-           type_name(type), display_value(*target, type).c_str());
-    if (s.scanner().truncated())
-        printf("AVISO: se alcanzo el limite de candidatos; el resultado esta truncado.\n");
-    if (s.scanner().warned())
-        printf("AVISO: la lista de candidatos es muy grande; el escaneo puede consumir mucha RAM.\n");
+           type_name(type), display_value(v, type).c_str());
+    print_scan_warnings(o);
     return {};
 }
 
@@ -357,6 +329,7 @@ static CommandResult cmd_next(const CommandArgs& args, Session& s) {
                "     next \"<texto>\" string | next <hex...> bytes (escaneo dinamico)\n");
         return {};
     }
+    Application app(s);
 
     // Refinamiento de un escaneo dinamico (string/bytes): changed, unchanged
     // o un patron nuevo (coincidencia exacta). Los filtros numericos no
@@ -391,19 +364,16 @@ static CommandResult cmd_next(const CommandArgs& args, Session& s) {
             newspec = make_dynamic_spec(dt, std::move(pat));
             s.set_scan_type(dt);
         }
-
-        std::string err;
-        bool ok = s.with_memory([&](Memory& mem) {
-            s.scanner().next_scan_dynamic(mem, filter, newspec);
-        }, err);
-        if (!ok) {
-            printf("Error: %s\n", err.c_str());
+        ScanOutcome o = app.next_scan_dynamic(filter, newspec);
+        if (!o.ok) {
+            printf("Error: %s\n", o.error.c_str());
             return {};
         }
         printf("Next Scan: %zu coincidencias\n", s.scanner().count());
         return {};
     }
 
+    // Refinamiento numerico: filtro + (en algunos casos) valor de comparacion.
     DataType type = s.scan_type();
     Filter filter = Filter::EXACT;
     std::optional<Value> target;
@@ -455,16 +425,11 @@ static CommandResult cmd_next(const CommandArgs& args, Session& s) {
         return {};
     }
     s.set_scan_type(type);
-
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        s.scanner().next_scan(mem, type, filter, target);
-    }, err);
-    if (!ok) {
-        printf("Error: %s\n", err.c_str());
+    ScanOutcome o = app.next_scan(type, filter, target);
+    if (!o.ok) {
+        printf("Error: %s\n", o.error.c_str());
         return {};
     }
-
     printf("Next Scan: %zu coincidencias\n", s.scanner().count());
     return {};
 }
@@ -535,23 +500,22 @@ static CommandResult cmd_pattern(const CommandArgs& args, Session& s) {
         return {};
     }
 
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        auto regions = parse_maps(s.pid());
-        auto res = scan_pattern(mem, regions, pat);
-        printf("Pattern Scan (%zu bytes%s): %zu coincidencias\n",
-               pat.size(), pat.has_wildcards() ? ", con wildcards" : "",
-               res.hits.size());
-        const size_t n = std::min<size_t>(res.hits.size(), 20);
-        for (size_t i = 0; i < n; ++i)
-            printf("[%4zu] 0x%016llx\n", i,
-                   (unsigned long long)res.hits[i]);
-        if (n < res.hits.size())
-            printf("... y %zu mas.\n", res.hits.size() - n);
-        if (res.truncated)
-            printf("AVISO: resultado truncado (limite de coincidencias).\n");
-    }, err);
-    if (!ok) printf("Error: %s\n", err.c_str());
+    Application app(s);
+    PatternOutcome o = app.pattern_scan(pat);
+    if (!o.ok) {
+        printf("Error: %s\n", o.error.c_str());
+        return {};
+    }
+    printf("Pattern Scan (%zu bytes%s): %zu coincidencias\n",
+           pat.size(), pat.has_wildcards() ? ", con wildcards" : "",
+           o.hits.size());
+    const size_t n = std::min<size_t>(o.hits.size(), 20);
+    for (size_t i = 0; i < n; ++i)
+        printf("[%4zu] 0x%016llx\n", i, (unsigned long long)o.hits[i]);
+    if (n < o.hits.size())
+        printf("... y %zu mas.\n", o.hits.size() - n);
+    if (o.truncated)
+        printf("AVISO: resultado truncado (limite de coincidencias).\n");
     return {};
 }
 
@@ -570,93 +534,37 @@ static CommandResult cmd_view(const CommandArgs& args, Session& s) {
     if (args.size() >= 2) len = (size_t)strtoull(args[1].c_str(), nullptr, 10);
     len = std::min<size_t>(len, 4096);
 
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        std::vector<uint8_t> buf(len);
-        ssize_t got = mem.read(addr, buf.data(), len);
-        if (got < 0) {
-            printf("Error de lectura en 0x%llx\n", (unsigned long long)addr);
-            return;
-        }
-        printf("Memoria en 0x%llx (%zd bytes):\n", (unsigned long long)addr, got);
-        hexdump(addr, buf.data(), (size_t)got);
-    }, err);
-    if (!ok) printf("Error: %s\n", err.c_str());
+    Application app(s);
+    ReadBytesOutcome o = app.read_bytes(addr, len);
+    if (!o.ok) {
+        printf("Error: %s\n", o.error.c_str());
+        return {};
+    }
+    if (o.got < 0) {
+        printf("Error de lectura en 0x%llx\n", (unsigned long long)addr);
+        return {};
+    }
+    printf("Memoria en 0x%llx (%zd bytes):\n", (unsigned long long)addr, o.got);
+    hexdump(addr, o.bytes.data(), (size_t)o.got);
     return {};
 }
 
-// Resultado de una escritura de memoria.
-struct WriteOutcome {
-    bool ok = false;   // true si la escritura se completo y verifico
-    std::string msg;   // texto completo a mostrar (o el error)
-};
-
-// Escribe 'value' (tipo 'type') en 'addr' con la memoria YA abierta y las
-// regiones dadas: comprueba region (existencia + escribible), lee el valor
-// actual, escribe y relee para verificar. Es el nucleo unico de escritura;
-// lo usan 'set', 'table set' (absoluta y dinamica) sin duplicar logica.
-static WriteOutcome write_value_at(Memory& mem, const std::vector<Region>& regions,
-                                   uint64_t addr, DataType type,
-                                   const Value& value) {
-    WriteOutcome o;
-    char b[512];
-
-    auto r = region_at(regions, addr);
-    if (!r) {
-        snprintf(b, sizeof b, "La direccion 0x%llx no pertenece a ninguna region.\n",
-                 (unsigned long long)addr);
-        o.msg = b;
-        return o;
+// Formatea un WriteOutcome (nucleo unico de escritura) como texto de la CLI.
+static void print_write_outcome(const WriteOutcome& o) {
+    if (!o.had_old) {
+        // Fallo antes de leer el valor actual: o.error tiene el motivo.
+        printf("%s\n", o.error.c_str());
+        return;
     }
-    if (!r->writable()) {
-        o.msg = "La region no es escribible (" + r->perms + ").\n";
-        return o;
+    printf("Actual: 0x%llx = %s\n", (unsigned long long)o.address,
+           display_value(o.old_value, o.type).c_str());
+    if (!o.wrote) {
+        if (!o.error.empty()) printf("%s\n", o.error.c_str());
+        return;
     }
-
-    const size_t w = type_size(type);
-    uint8_t cur[8] = {0};
-    ssize_t got = mem.read(addr, cur, w);
-    if (got != (ssize_t)w) {
-        snprintf(b, sizeof b, "No se pudo leer el valor actual en 0x%llx\n",
-                 (unsigned long long)addr);
-        o.msg = b;
-        return o;
-    }
-    Value old = value_from_bytes(cur, w);
-    snprintf(b, sizeof b, "Actual: 0x%llx = %s\n", (unsigned long long)addr,
-             display_value(old, type).c_str());
-    o.msg = b;
-
-    ssize_t wr = mem.write(addr, &value.bits, w);
-    if (wr != (ssize_t)w) {
-        snprintf(b, sizeof b, "Error de escritura (%zd bytes escritos)\n", wr);
-        o.msg += b;
-        return o;
-    }
-    uint8_t ver[8] = {0};
-    if (mem.read(addr, ver, w) == (ssize_t)w) {
-        Value nv = value_from_bytes(ver, w);
-        snprintf(b, sizeof b, "Nuevo:  0x%llx = %s %s\n", (unsigned long long)addr,
-                 display_value(nv, type).c_str(),
-                 value_equal(nv, value, type) ? "(verificado)" : "(NO verificado)");
-        o.msg += b;
-        o.ok = true;
-    }
-    return o;
-}
-
-// Escribe 'value' (tipo 'type') en 'addr' a traves de Session: regiones +
-// attach + operacion + detach. Usado por 'set' y 'table set' (absoluta).
-static WriteOutcome write_value(Session& s, uint64_t addr, DataType type,
-                                const Value& value) {
-    auto regions = parse_maps(s.pid());
-    WriteOutcome o;
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        o = write_value_at(mem, regions, addr, type, value);
-    }, err);
-    if (!ok) o.msg = "Error: " + err + "\n";
-    return o;
+    printf("Nuevo:  0x%llx = %s %s\n", (unsigned long long)o.address,
+           display_value(o.new_value, o.type).c_str(),
+           o.verified ? "(verificado)" : "(NO verificado)");
 }
 
 static CommandResult cmd_set(const CommandArgs& args, Session& s) {
@@ -685,8 +593,8 @@ static CommandResult cmd_set(const CommandArgs& args, Session& s) {
         return {};
     }
 
-    WriteOutcome wo = write_value(s, addr, type, v);
-    printf("%s", wo.msg.c_str());
+    Application app(s);
+    print_write_outcome(app.write(addr, type, v));
     return {};
 }
 
@@ -701,20 +609,20 @@ static CommandResult cmd_info(const CommandArgs& args, Session& s) {
         printf("Direccion invalida: %s\n", args[0].c_str());
         return {};
     }
-    auto regions = parse_maps(s.pid());
-    auto r = region_at(regions, addr);
-    if (!r) {
-        printf("La direccion 0x%llx no pertenece a ninguna region.\n",
-               (unsigned long long)addr);
+    Application app(s);
+    InfoOutcome o = app.region_info(addr);
+    if (!o.ok) {
+        printf("%s\n", o.error.c_str());
         return {};
     }
+    const Region& r = *o.region;
     printf("Direccion:    0x%llx\n", (unsigned long long)addr);
     printf("Region:       0x%llx - 0x%llx (%llu bytes)\n",
-           (unsigned long long)r->start, (unsigned long long)r->end,
-           (unsigned long long)r->size());
-    printf("Permisos:     %s\n", r->perms.c_str());
-    printf("Offset:       0x%llx\n", (unsigned long long)r->offset);
-    printf("Archivo:      %s\n", r->path.empty() ? "(anonimo)" : r->path.c_str());
+           (unsigned long long)r.start, (unsigned long long)r.end,
+           (unsigned long long)r.size());
+    printf("Permisos:     %s\n", r.perms.c_str());
+    printf("Offset:       0x%llx\n", (unsigned long long)r.offset);
+    printf("Archivo:      %s\n", r.path.empty() ? "(anonimo)" : r.path.c_str());
     return {};
 }
 
@@ -774,7 +682,8 @@ static CommandResult cmd_table_add(const CommandArgs& args, Session& s) {
     if (args.size() >= 2 && parse_type(args[1], type)) di = 2;
     std::string desc = join_desc(args, di);
 
-    size_t idx = s.table().add(addr, type, desc);
+    Application app(s);
+    size_t idx = app.add_entry(addr, type, desc);
     printf("Entrada %zu anadida: 0x%016llx (%s) \"%s\"\n", idx,
            (unsigned long long)addr, type_name(type), desc.c_str());
     return {};
@@ -805,7 +714,9 @@ static CommandResult cmd_table_add_result(const CommandArgs& args, Session& s) {
         return {};
     }
     std::string desc = join_desc(args, 1);
-    size_t nidx = s.table().add(res[idx].addr, s.scan_type(), desc);
+
+    Application app(s);
+    size_t nidx = app.add_result_entry(idx, desc);
     printf("Entrada %zu anadida desde results[%zu]: 0x%016llx (%s)\n", nidx, idx,
            (unsigned long long)res[idx].addr, type_name(s.scan_type()));
     return {};
@@ -821,7 +732,8 @@ static CommandResult cmd_table_remove(const CommandArgs& args, Session& s) {
         printf("Indice invalido: %s\n", args[0].c_str());
         return {};
     }
-    if (!s.table().remove(idx)) {
+    Application app(s);
+    if (!app.remove_entry(idx)) {
         printf("No existe la entrada %zu.\n", idx);
         return {};
     }
@@ -830,55 +742,26 @@ static CommandResult cmd_table_remove(const CommandArgs& args, Session& s) {
 }
 
 static CommandResult cmd_table_clear(const CommandArgs&, Session& s) {
-    s.table().clear();
+    Application app(s);
+    app.clear_entries();
     printf("Tabla vaciada.\n");
     return {};
 }
 
-// Lee y muestra una entrada. 'mem' ya debe estar abierta. Devuelve true si
-// la lectura se completo (marca la entrada como verificada en el proceso
-// actual). Para entradas dinamicas (kind 'pointer') resuelve la cadena con
-// PointerResolver en CADA lectura (nunca se guarda la direccion resuelta).
-static bool read_entry_print(Memory& mem, const std::vector<Region>& regions,
-                             size_t idx, AddressEntry& e) {
-    if (e.ptr) {
-        ResolveResult r = resolve_chain(*e.ptr, mem, regions);
-        if (!r.ok) {
-            printf("[%zu] %s\n", idx, r.error.c_str());
-            return false;
-        }
-        printf("[%zu] 0x%016llx = %s (%s)%s\n", idx,
-               (unsigned long long)r.address,
-               display_value(r.value, e.type).c_str(), type_name(e.type),
-               e.stale ? "  (stale)" : "");
-        e.stale = false;
-        return true;
+// Formatea un EntryReadOutcome (lectura de una entrada de la tabla).
+static void print_entry_read(const EntryReadOutcome& o) {
+    if (!o.attempted) {
+        printf("[%zu] %s\n", o.index, o.error.c_str());
+        return;
     }
-    auto r = region_at(regions, e.address);
-    if (!r) {
-        printf("[%zu] 0x%016llx: no pertenece a ninguna region.\n", idx,
-               (unsigned long long)e.address);
-        return false;
+    if (!o.ok) {
+        printf("[%zu] %s\n", o.index, o.error.c_str());
+        return;
     }
-    if (!r->readable()) {
-        printf("[%zu] 0x%016llx: region no legible (%s).\n", idx,
-               (unsigned long long)e.address, r->perms.c_str());
-        return false;
-    }
-    const size_t w = type_size(e.type);
-    uint8_t buf[8] = {0};
-    ssize_t got = mem.read(e.address, buf, w);
-    if (got != (ssize_t)w) {
-        printf("[%zu] 0x%016llx: no se pudo leer (%zd bytes).\n", idx,
-               (unsigned long long)e.address, got);
-        return false;
-    }
-    Value v = value_from_bytes(buf, w);
-    printf("[%zu] 0x%016llx = %s (%s)%s\n", idx, (unsigned long long)e.address,
-           display_value(v, e.type).c_str(), type_name(e.type),
-           e.stale ? "  (stale)" : "");
-    e.stale = false; // relectura exitosa en el proceso actual
-    return true;
+    printf("[%zu] 0x%016llx = %s (%s)%s\n", o.index,
+           (unsigned long long)o.address,
+           display_value(o.value, o.type).c_str(), type_name(o.type),
+           o.was_stale ? "  (stale)" : "");
 }
 
 static CommandResult cmd_table_read(const CommandArgs& args, Session& s) {
@@ -887,7 +770,7 @@ static CommandResult cmd_table_read(const CommandArgs& args, Session& s) {
         printf("La tabla esta vacia.\n");
         return {};
     }
-    auto regions = parse_maps(s.pid());
+    Application app(s);
 
     // Indice especifico.
     if (!args.empty()) {
@@ -896,33 +779,19 @@ static CommandResult cmd_table_read(const CommandArgs& args, Session& s) {
             printf("Indice invalido: %s\n", args[0].c_str());
             return {};
         }
-        AddressEntry* e = s.table().get(idx);
-        if (!e) {
+        EntryReadOutcome o = app.read_entry(idx);
+        if (!o.attempted && o.error.empty()) {
             printf("No existe la entrada %zu.\n", idx);
             return {};
         }
-        if (!e->enabled) {
-            printf("La entrada %zu esta desactivada (usa 'table toggle %zu').\n", idx, idx);
-            return {};
-        }
-        std::string err;
-        bool ok = s.with_memory([&](Memory& mem) {
-            read_entry_print(mem, regions, idx, *e);
-        }, err);
-        if (!ok) printf("Error: %s\n", err.c_str());
+        print_entry_read(o);
         return {};
     }
 
     // Todas las entradas activas, en un solo attach.
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        for (size_t i = 0; i < s.table().size(); ++i) {
-            AddressEntry* e = s.table().get(i);
-            if (!e->enabled) continue;
-            read_entry_print(mem, regions, i, *e);
-        }
-    }, err);
-    if (!ok) printf("Error: %s\n", err.c_str());
+    std::vector<EntryReadOutcome> outs;
+    app.read_all_entries(outs);
+    for (const auto& o : outs) print_entry_read(o);
     return {};
 }
 
@@ -951,29 +820,9 @@ static CommandResult cmd_table_set(const CommandArgs& args, Session& s) {
         printf("Valor invalido: %s (tipo %s)\n", args[1].c_str(), type_name(e->type));
         return {};
     }
-    if (e->ptr) {
-        // Entrada dinamica: resolver la cadena y escribir en la direccion
-        // resultante (mismo mecanismo que 'set', sin duplicar logica).
-        const std::vector<Region> regions = parse_maps(s.pid());
-        WriteOutcome wo;
-        std::string err;
-        bool ok = s.with_memory([&](Memory& mem) {
-            ResolveResult r = resolve_chain(*e->ptr, mem, regions);
-            if (!r.ok) {
-                wo.msg = "Error al resolver la entrada " +
-                         std::to_string(idx) + ": " + r.error + "\n";
-                return;
-            }
-            wo = write_value_at(mem, regions, r.address, e->type, v);
-        }, err);
-        if (!ok) wo.msg = "Error: " + err + "\n";
-        if (wo.ok) e->stale = false;
-        printf("%s", wo.msg.c_str());
-        return {};
-    }
-    WriteOutcome wo = write_value(s, e->address, e->type, v);
-    if (wo.ok) e->stale = false;
-    printf("%s", wo.msg.c_str());
+
+    Application app(s);
+    print_write_outcome(app.write_entry(idx, v));
     return {};
 }
 
@@ -1002,8 +851,9 @@ static CommandResult cmd_table_save(const CommandArgs& args, Session& s) {
         printf("Uso: table save <archivo>\n");
         return {};
     }
+    Application app(s);
     std::string err;
-    if (!s.table().save(args[0], err)) {
+    if (!app.save_table(args[0], err)) {
         printf("Error al guardar: %s\n", err.c_str());
         return {};
     }
@@ -1016,8 +866,9 @@ static CommandResult cmd_table_load(const CommandArgs& args, Session& s) {
         printf("Uso: table load <archivo>\n");
         return {};
     }
+    Application app(s);
     std::string err;
-    if (!s.table().load(args[0], err)) {
+    if (!app.load_table(args[0], err)) {
         printf("Error al cargar: %s\n", err.c_str());
         return {};
     }
@@ -1053,99 +904,6 @@ static CommandResult cmd_table(const CommandArgs& args, Session& s) {
 //   pointer chains [n]                    alias de 'pointer results'
 //   pointer add <idx>                     anadir la base de una cadena a la tabla
 
-PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
-    PointerScanArgs out;
-    if (args.empty()) {
-        out.error = "Uso: pointer scan <direccion> [depth=N] [max_offset=X] "
-                    "[offset_step=S] [module-only] [code] [type=T]";
-        return out;
-    }
-    if (!parse_addr(args[0], out.target)) {
-        out.error = "Direccion invalida: " + args[0];
-        return out;
-    }
-    for (size_t i = 1; i < args.size(); ++i) {
-        const std::string& tok = args[i];
-        if (tok == "code") {
-            out.include_code = true;
-            continue;
-        }
-        if (tok == "module-only") {
-            out.module_only = true;
-            continue;
-        }
-        if (tok.rfind("depth=", 0) == 0) {
-            const std::string d = tok.substr(6);
-            char* end = nullptr;
-            errno = 0;
-            long v = std::strtol(d.c_str(), &end, 10);
-            if (d.empty() || end == d.c_str() || *end != '\0' ||
-                errno == ERANGE || v < 1 || v > 7) {
-                out.error = "depth debe estar entre 1 y 7 (obtenido: " +
-                            (d.empty() ? "(vacio)" : d) + ")";
-                return out;
-            }
-            out.depth = (int)v;
-            continue;
-        }
-        if (tok.rfind("max_offset=", 0) == 0) {
-            const std::string v = tok.substr(11);
-            char* end = nullptr;
-            errno = 0;
-            unsigned long long x = std::strtoull(v.c_str(), &end, 0);
-            if (v.empty() || end == v.c_str() || *end != '\0' ||
-                errno == ERANGE || x > 0x10000) {
-                out.error = "max_offset invalido (maximo 0x10000): " +
-                            (v.empty() ? "(vacio)" : v);
-                return out;
-            }
-            out.max_offset = (uint64_t)x;
-            continue;
-        }
-        if (tok.rfind("offset_step=", 0) == 0) {
-            const std::string v = tok.substr(12);
-            char* end = nullptr;
-            errno = 0;
-            unsigned long long x = std::strtoull(v.c_str(), &end, 0);
-            if (v.empty() || end == v.c_str() || *end != '\0' ||
-                errno == ERANGE || x == 0) {
-                out.error = "offset_step debe ser mayor que 0: " +
-                            (v.empty() ? "(vacio)" : v);
-                return out;
-            }
-            out.offset_step = (uint64_t)x;
-            continue;
-        }
-        if (tok.rfind("type=", 0) == 0) {
-            DataType t;
-            if (!parse_type(tok.substr(5), t) || t == DataType::PTR) {
-                out.error = "Tipo invalido: " + tok.substr(5);
-                return out;
-            }
-            out.value_type = t;
-            continue;
-        }
-        out.error = "Opcion desconocida: " + tok;
-        return out;
-    }
-
-    // IMP-2 (auditoria de estabilizacion): limite combinado de la ventana de
-    // offsets. floor(max_offset/offset_step)+1 offsets por objetivo; una
-    // combinacion como max_offset=0x10000 con offset_step=1 generaria 65.537
-    // posiciones por objetivo y, al multiplicarse por las fuentes del
-    // siguiente nivel, puede agotar la RAM del Chromebook (sin swap).
-    // (offset_step ya es >= 1 aqui: el 0 se rechazo antes.)
-    const uint64_t n_offsets = out.max_offset / out.offset_step + 1;
-    if (n_offsets > kMaxOffsetShifts) {
-        out.error = "La ventana de offsets es demasiado grande: " +
-                    std::to_string(n_offsets) + " offsets por objetivo "
-                    "(maximo " + std::to_string(kMaxOffsetShifts) +
-                    "). Reduce max_offset o aumenta offset_step.";
-        return out;
-    }
-    return out;
-}
-
 std::string pointer_chain_description(const std::vector<uint64_t>& nodes) {
     std::string s;
     char b[32];
@@ -1178,83 +936,6 @@ std::string pointer_chain_description(const std::vector<uint64_t>& nodes,
     return s;
 }
 
-static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
-    const PointerScanArgs pa = parse_pointer_scan_args(args);
-    if (!pa.error.empty()) {
-        printf("%s\n", pa.error.c_str());
-        return {};
-    }
-    if (!has_target(s)) return {};
-
-    // El target debe pertenecer a una region legible (comprobacion previa
-    // razonable; el escaneo real ocurre en un solo attach con with_memory).
-    auto regions = parse_maps(s.pid());
-    auto r = region_at(regions, pa.target);
-    if (!r) {
-        printf("La direccion 0x%llx no pertenece a ninguna region.\n",
-               (unsigned long long)pa.target);
-        return {};
-    }
-    if (!r->readable()) {
-        printf("La direccion 0x%llx esta en una region no legible (%s).\n",
-               (unsigned long long)pa.target, r->perms.c_str());
-        return {};
-    }
-
-    PointerScanOptions opts;
-    opts.target = pa.target;
-    opts.max_depth = pa.depth;
-    opts.include_code = pa.include_code;
-    opts.max_offset = pa.max_offset;
-    opts.offset_step = pa.offset_step;
-
-    const DataType vtype = pa.value_type.value_or(s.scan_type());
-
-    PointerScanResult res;
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        res = pointer_scan(mem, regions, opts);
-    }, err);
-    if (!ok) {
-        printf("Error: %s\n", err.c_str());
-        return {};
-    }
-    res.value_type = vtype;
-
-    if (pa.module_only) {
-        // Filtrar: solo cadenas cuya raiz (nodes[0]) esta en una region con
-        // pathname de archivo (MODULE, persistente frente a ASLR).
-        std::vector<PointerChain> kept;
-        for (auto& c : res.chains) {
-            if (c.nodes.empty()) continue;
-            const PointerBase b = make_base_from_address(regions, c.nodes[0]);
-            if (b.kind == PointerBaseKind::MODULE)
-                kept.push_back(std::move(c));
-        }
-        res.chains = std::move(kept);
-    }
-    s.set_pointer_result(std::move(res));
-
-    const PointerScanResult& r2 = s.pointer_result().value();
-    printf("Pointer Scan:\n");
-    printf("target: 0x%016llx\n", (unsigned long long)r2.target);
-    printf("depth: %d\n", opts.max_depth);
-    printf("levels: %d\n", r2.levels);
-    printf("chains: %zu\n", r2.chains.size());
-    printf("offsets: 0x0..0x%llx (step 0x%llx)%s\n",
-           (unsigned long long)opts.max_offset,
-           (unsigned long long)opts.offset_step,
-           pa.module_only ? " (solo raices de modulo)" : "");
-    if (r2.edges_truncated || r2.chains_truncated) {
-        printf("WARNING: pointer scan truncado\n");
-        if (r2.edges_truncated)
-            printf("- limite de aristas alcanzado (max_edges_per_level)\n");
-        if (r2.chains_truncated)
-            printf("- limite de cadenas alcanzado (max_chains)\n");
-    }
-    return {};
-}
-
 // Describe la raiz de una cadena para 'pointer results': MODULE (path +
 // offset) o ABSOLUTE, con su persistencia. Devuelve true si es MODULE.
 static bool print_root_line(const std::vector<Region>& regions,
@@ -1273,6 +954,49 @@ static bool print_root_line(const std::vector<Region>& regions,
     snprintf(buf, n, "[root ABSOLUTE 0x%016llx] (no persistente)",
              (unsigned long long)b.address);
     return false;
+}
+
+static CommandResult cmd_pointer_scan(const CommandArgs& args, Session& s) {
+    const PointerScanArgs pa = parse_pointer_scan_args(args);
+    if (!pa.error.empty()) {
+        printf("%s\n", pa.error.c_str());
+        return {};
+    }
+    if (!has_target(s)) return {};
+
+    PointerScanInput in;
+    in.opts.target = pa.target;
+    in.opts.max_depth = pa.depth;
+    in.opts.include_code = pa.include_code;
+    in.opts.max_offset = pa.max_offset;
+    in.opts.offset_step = pa.offset_step;
+    in.value_type = pa.value_type.value_or(s.scan_type());
+    in.module_only = pa.module_only;
+
+    Application app(s);
+    PointerScanOutcome o = app.pointer_scan(in);
+    if (!o.ok) {
+        printf("%s\n", o.error.c_str());
+        return {};
+    }
+    const PointerScanResult& r = o.result;
+    printf("Pointer Scan:\n");
+    printf("target: 0x%016llx\n", (unsigned long long)r.target);
+    printf("depth: %d\n", pa.depth);
+    printf("levels: %d\n", r.levels);
+    printf("chains: %zu\n", r.chains.size());
+    printf("offsets: 0x0..0x%llx (step 0x%llx)%s\n",
+           (unsigned long long)pa.max_offset,
+           (unsigned long long)pa.offset_step,
+           pa.module_only ? " (solo raices de modulo)" : "");
+    if (r.edges_truncated || r.chains_truncated) {
+        printf("WARNING: pointer scan truncado\n");
+        if (r.edges_truncated)
+            printf("- limite de aristas alcanzado (max_edges_per_level)\n");
+        if (r.chains_truncated)
+            printf("- limite de cadenas alcanzado (max_chains)\n");
+    }
+    return {};
 }
 
 static CommandResult cmd_pointer_results(const CommandArgs& args, Session& s) {
@@ -1333,21 +1057,21 @@ static CommandResult cmd_pointer_add(const CommandArgs& args, Session& s) {
         return {};
     }
 
-    std::vector<Region> regions;
-    if (s.has_pid()) regions = parse_maps(s.pid());
-    const PointerChainRef ref =
-        make_chain_ref(regions, c.nodes, c.offsets, res.value_type);
-    const std::string desc =
-        pointer_chain_description(c.nodes, c.offsets);
-    const size_t nidx = s.table().add(ref, desc);
-
+    Application app(s);
+    AddChainOutcome o = app.add_pointer_chain(
+        idx, pointer_chain_description(c.nodes, c.offsets));
+    if (!o.ok) {
+        printf("%s\n", o.error.c_str());
+        return {};
+    }
+    const size_t nidx = o.table_index;
     printf("Entrada %zu anadida desde la cadena %zu:\n", nidx, idx);
-    if (ref.root.kind == PointerBaseKind::MODULE)
+    if (o.ref.root.kind == PointerBaseKind::MODULE)
         printf("  pointer[module]  (persistente)\n");
     else
         printf("  pointer[abs]  (no persistente)\n");
     printf("  tipo: %s\n", type_name(res.value_type));
-    printf("  %s\n", desc.c_str());
+    printf("  %s\n", pointer_chain_description(c.nodes, c.offsets).c_str());
     return {};
 }
 
@@ -1372,22 +1096,16 @@ static CommandResult cmd_pointer_resolve(const CommandArgs& args, Session& s) {
     }
     if (!has_target(s)) return {};
 
-    const std::vector<Region> regions = parse_maps(s.pid());
-    std::string err;
-    bool ok = s.with_memory([&](Memory& mem) {
-        ResolveResult r = resolve_chain(*e->ptr, mem, regions);
-        if (!r.ok) {
-            printf("Error al resolver la entrada %zu: %s\n", idx,
-                   r.error.c_str());
-            return;
-        }
-        e->stale = false;
-        printf("Entrada %zu resuelta: 0x%016llx = %s (%s)\n", idx,
-               (unsigned long long)r.address,
-               display_value(r.value, e->type).c_str(),
-               type_name(e->type));
-    }, err);
-    if (!ok) printf("Error: %s\n", err.c_str());
+    Application app(s);
+    ResolveEntryOutcome o = app.resolve_entry(idx);
+    if (!o.ok) {
+        printf("Error al resolver la entrada %zu: %s\n", idx, o.error.c_str());
+        return {};
+    }
+    printf("Entrada %zu resuelta: 0x%016llx = %s (%s)\n", idx,
+           (unsigned long long)o.address,
+           display_value(o.value, o.type).c_str(),
+           type_name(o.type));
     return {};
 }
 
