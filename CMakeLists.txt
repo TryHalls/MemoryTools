@@ -21,6 +21,8 @@ add_executable(memorytool
   src/address_table.cpp
   src/pointer.cpp
   src/pointer_resolver.cpp
+  src/web/json.cpp
+  src/web/jobs.cpp
 )
 target_include_directories(memorytool PRIVATE src)
 target_compile_options(memorytool PRIVATE -Wall -Wextra)

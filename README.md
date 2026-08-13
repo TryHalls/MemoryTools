@@ -518,7 +518,8 @@ MemoryTool/
 │   ├── command.h/.cpp  # Capa de comandos CLI (parsing + dispatch + formateo)
 │   ├── pointer.h/.cpp  # Pointer Scanner (level-scan inverso) + refs V2
 │   ├── pointer_resolver.h/.cpp  # Resolución de cadenas persistentes (V2)
-│   └── chunk.h         # Recorrido por bloques con solapamiento (y stride)
+│   ├── chunk.h         # Recorrido por bloques con solapamiento (y stride)
+│   └── web/            # Infraestructura de la futura Web UI local (JSON + jobs)
 ├── tests/
 │   ├── objetivo.cpp    # Programa de prueba (variable conocida)
 │   ├── pointer_test.cpp    # Programa de prueba (cadenas de punteros)
@@ -534,6 +535,8 @@ MemoryTool/
 │   ├── test_pointer_v2.cpp  # Tests de la infraestructura V2 (bases, resolver, formatos)
 │   ├── test_dynamic.cpp # Tests de string/bytes (patrones, wildcards, límites, overlap)
 │   ├── test_application.cpp # Tests de la capa Application (headless)
+│   ├── test_json.cpp   # Tests unitarios del JSON mínimo (src/web/json.h)
+│   ├── test_jobs.cpp   # Tests unitarios de jobs (src/web/jobs.h)
 │   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)

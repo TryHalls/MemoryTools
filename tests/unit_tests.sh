@@ -45,6 +45,14 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     src/memory.cpp \
     -o build/test_application
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_json.cpp src/web/json.cpp \
+    -o build/test_json
+
+g++ -std=c++17 -O2 -Wall -Wextra -I src -pthread \
+    tests/test_jobs.cpp src/web/jobs.cpp \
+    -o build/test_jobs
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -69,6 +77,12 @@ echo "== test_dynamic =="
 echo
 echo "== test_application =="
 ./build/test_application || ok=0
+echo
+echo "== test_json =="
+./build/test_json || ok=0
+echo
+echo "== test_jobs =="
+./build/test_jobs || ok=0
 
 if [ "$ok" = 1 ]; then
     echo
