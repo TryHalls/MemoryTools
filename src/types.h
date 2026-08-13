@@ -7,6 +7,7 @@
 #pragma once
 
 #include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -174,14 +175,38 @@ inline bool value_equal(Value a, Value b, DataType t) {
     return value_compare(a, b, t) == 0;
 }
 
-// Parsea texto a un valor del tipo pedido. Numeros decimales, o 0x... en hex.
+// Base numerica del texto: 16 si hay prefijo 0x/0X (tras un posible signo),
+// 10 en otro caso. Asi "0x10" == 16 y "-0x10" == -16; no hay prefijo octal.
+static inline int text_base(const std::string& text) {
+    size_t i = (!text.empty() && (text[0] == '-' || text[0] == '+')) ? 1 : 0;
+    if (i + 1 < text.size() && text[i] == '0' &&
+        (text[i + 1] == 'x' || text[i + 1] == 'X'))
+        return 16;
+    return 10;
+}
+
+// Parsea texto a un valor del tipo pedido. Numeros decimales o 0x... en hex.
+//
+// Semantica explicita (CRIT-A de la auditoria de estabilizacion):
+//  - Los tipos unsigned (u8..u64, ptr) se leen con strtoull: aceptan
+//    0xffffffffffffffff == UINT64_MAX. Un signo '-' se rechaza (strtoull lo
+//    convertiria silenciosamente en un valor enorme) y un overflow (errno ==
+//    ERANGE) se rechaza: NUNCA se produce silenciosamente otro valor.
+//  - Los tipos signed (i8..i64) se leen con strtoll: el hex es el valor
+//    numerico del texto (0xFFFFFFFF == 4294967295); los negativos se
+//    escriben con '-' ("-0x1" == -1). Cualquier valor fuera de INT64 (o del
+//    rango del tipo) se rechaza con ERANGE / limites explicitos.
+//  - Los floats se rechazan si el overflow produce inf (fuera del rango
+//    representable); el underflow a un valor finito (subnormal/0) se acepta.
 inline bool parse_value(const std::string& text, DataType t, Value& out) {
     if (text.empty()) return false;
     char* end = nullptr;
+    errno = 0;
 
     if (type_is_float(t)) {
         double d = std::strtod(text.c_str(), &end);
         if (end == text.c_str() || *end != '\0') return false;
+        if (errno == ERANGE && !std::isfinite(d)) return false; // -> inf
         if (t == DataType::F32) {
             float f = (float)d;
             std::memcpy(&out.bits, &f, sizeof(f));
@@ -191,47 +216,64 @@ inline bool parse_value(const std::string& text, DataType t, Value& out) {
         return true;
     }
 
-    int base = (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) ? 16 : 10;
-    long long v = std::strtoll(text.c_str(), &end, base);
-    if (end == text.c_str() || *end != '\0') return false;
+    const int base = text_base(text);
 
     switch (t) {
-        case DataType::I8:
-            if (v < INT8_MIN || v > INT8_MAX) return false;
-            out.bits = (uint8_t)(int8_t)v;
-            break;
         case DataType::U8:
-            if (v < 0 || v > UINT8_MAX) return false;
-            out.bits = (uint8_t)v;
-            break;
-        case DataType::I16:
-            if (v < INT16_MIN || v > INT16_MAX) return false;
-            out.bits = (uint16_t)(int16_t)v;
-            break;
         case DataType::U16:
-            if (v < 0 || v > UINT16_MAX) return false;
-            out.bits = (uint16_t)v;
-            break;
-        case DataType::I32:
-            if (v < INT32_MIN || v > INT32_MAX) return false;
-            out.bits = (uint32_t)(int32_t)v;
-            break;
         case DataType::U32:
-            if (v < 0 || (uint64_t)v > UINT32_MAX) return false;
-            out.bits = (uint32_t)v;
-            break;
-        case DataType::I64:
-            out.bits = (uint64_t)v;
-            break;
         case DataType::U64:
-        case DataType::PTR:
-            if (v < 0) return false;
-            out.bits = (uint64_t)v;
-            break;
+        case DataType::PTR: {
+            if (text[0] == '-') return false;
+            unsigned long long u = std::strtoull(text.c_str(), &end, base);
+            if (end == text.c_str() || *end != '\0' || errno == ERANGE)
+                return false;
+            switch (t) {
+                case DataType::U8:
+                    if (u > UINT8_MAX) return false;
+                    out.bits = (uint8_t)u;
+                    return true;
+                case DataType::U16:
+                    if (u > UINT16_MAX) return false;
+                    out.bits = (uint16_t)u;
+                    return true;
+                case DataType::U32:
+                    if (u > UINT32_MAX) return false;
+                    out.bits = (uint32_t)u;
+                    return true;
+                default: // U64 / PTR
+                    out.bits = (uint64_t)u;
+                    return true;
+            }
+        }
+        case DataType::I8:
+        case DataType::I16:
+        case DataType::I32:
+        case DataType::I64: {
+            long long v = std::strtoll(text.c_str(), &end, base);
+            if (end == text.c_str() || *end != '\0' || errno == ERANGE)
+                return false;
+            switch (t) {
+                case DataType::I8:
+                    if (v < INT8_MIN || v > INT8_MAX) return false;
+                    out.bits = (uint8_t)(int8_t)v;
+                    return true;
+                case DataType::I16:
+                    if (v < INT16_MIN || v > INT16_MAX) return false;
+                    out.bits = (uint16_t)(int16_t)v;
+                    return true;
+                case DataType::I32:
+                    if (v < INT32_MIN || v > INT32_MAX) return false;
+                    out.bits = (uint32_t)(int32_t)v;
+                    return true;
+                default: // I64
+                    out.bits = (uint64_t)v;
+                    return true;
+            }
+        }
         default:
             return false;
     }
-    return true;
 }
 
 inline std::string value_to_string(Value v, DataType t) {

@@ -142,12 +142,23 @@ static void test_i64() {
     ok = parse_value("9223372036854775807", DataType::I64, v); CHECK(ok);
     CHECK_BITS(v.bits, 0x7FFFFFFFFFFFFFFFull);
     CHECK_EQ(value_as_int(v, DataType::I64), INT64_MAX);
-    // HALLAZGO (documentado): I64 NO comprueba rango/overflow. "9223372036854775808"
-    // (INT64_MAX+1) hace que strtoll sature a LLONG_MAX con ERANGE y parse_value
-    // devuelve true con bits = 0x7FFFFFFFFFFFFFFF, no el valor real.
-    ok = parse_value("9223372036854775808", DataType::I64, v);
-    CHECK(ok); // comportamiento actual: aceptado (silenciosamente saturado)
+    // CRIT-A (corregido): INT64_MAX+1 / INT64_MIN-1 se rechazan (ERANGE); un
+    // overflow ya no produce silenciosamente otro valor.
+    ok = parse_value("9223372036854775808", DataType::I64, v); CHECK(!ok);
+    ok = parse_value("-9223372036854775809", DataType::I64, v); CHECK(!ok);
+    // Hex: 0x7FFFFFFFFFFFFFFF == INT64_MAX; 0x8000000000000000 (INT64_MAX+1)
+    // y 0xFFFFFFFFFFFFFFFF se rechazan (fuera de INT64).
+    ok = parse_value("0x7FFFFFFFFFFFFFFF", DataType::I64, v); CHECK(ok);
     CHECK_BITS(v.bits, 0x7FFFFFFFFFFFFFFFull);
+    ok = parse_value("0x8000000000000000", DataType::I64, v); CHECK(!ok);
+    ok = parse_value("0xFFFFFFFFFFFFFFFF", DataType::I64, v); CHECK(!ok);
+    // Hex negativo explicito: -0x1 == -1, -0x8000000000000000 == INT64_MIN.
+    ok = parse_value("-0x1", DataType::I64, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0xFFFFFFFFFFFFFFFFull);
+    CHECK_EQ(value_as_int(v, DataType::I64), -1);
+    ok = parse_value("-0x8000000000000000", DataType::I64, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0x8000000000000000ull);
+    CHECK_EQ(value_as_int(v, DataType::I64), INT64_MIN);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +203,35 @@ static void test_u64() {
     Value v;
     ok = parse_value("0", DataType::U64, v); CHECK(ok); CHECK_EQ(v.bits, 0);
     ok = parse_value("-1", DataType::U64, v); CHECK(!ok);
-    // HALLAZGO (documentado): U64 tampoco puede representar UINT64_MAX por
-    // texto: strtoll satura a LLONG_MAX con ERANGE y, al no haber control de
-    // errno, parse_value devuelve true con bits = 0x7FFFFFFFFFFFFFFF.
-    ok = parse_value("18446744073709551615", DataType::U64, v);
-    CHECK(ok); // comportamiento actual: aceptado (saturado)
-    CHECK_BITS(v.bits, 0x7FFFFFFFFFFFFFFFull);
-    CHECK_EQ(v.bits, (uint64_t)std::numeric_limits<long long>::max());
+    // CRIT-A (corregido): UINT64_MAX en decimal y en hex se aceptan con el
+    // valor real (antes se saturada silenciosamente a 0x7FFFFFFFFFFFFFFF).
+    ok = parse_value("18446744073709551615", DataType::U64, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0xFFFFFFFFFFFFFFFFull);
+    CHECK_EQ(value_as_uint(v, DataType::U64), UINT64_MAX);
+    ok = parse_value("0xFFFFFFFFFFFFFFFF", DataType::U64, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0xFFFFFFFFFFFFFFFFull);
+    // UINT64_MAX + 1 -> rechazado (decimal y hex)
+    ok = parse_value("18446744073709551616", DataType::U64, v); CHECK(!ok);
+    ok = parse_value("0x10000000000000000", DataType::U64, v); CHECK(!ok);
     // Representable de forma exacta: 0x7FFFFFFFFFFFFFFF
     ok = parse_value("0x7FFFFFFFFFFFFFFF", DataType::U64, v); CHECK(ok);
     CHECK_BITS(v.bits, 0x7FFFFFFFFFFFFFFFull);
+}
+
+// CRIT-A (corregido): PTR usa el mismo camino unsigned: acepta el maximo de
+// 64 bits y rechaza el overflow y el signo.
+static void test_ptr_max() {
+    bool ok = false;
+    Value v;
+    ok = parse_value("18446744073709551615", DataType::PTR, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0xFFFFFFFFFFFFFFFFull);
+    ok = parse_value("0xFFFFFFFFFFFFFFFF", DataType::PTR, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0xFFFFFFFFFFFFFFFFull);
+    ok = parse_value("0x10000000000000000", DataType::PTR, v); CHECK(!ok);
+    ok = parse_value("-1", DataType::PTR, v); CHECK(!ok);
+    // una direccion normal de espacio de usuario sigue aceptandose
+    ok = parse_value("0x7f1234567890", DataType::PTR, v); CHECK(ok);
+    CHECK_BITS(v.bits, 0x7f1234567890ull);
 }
 
 // ---------------------------------------------------------------------------
@@ -378,16 +408,21 @@ static void test_types_meta() {
     CHECK_STR(value_to_string(u64max, DataType::U64), "18446744073709551615");
 }
 
-// HALLAZGO adicional (documentado, no probado como fallo): parse_value no
-// soporta hex negativo. "0x10" se detecta por el prefijo "0x" al INICIO; con
-// "-0x10" la base queda en 10 y strtoll se detiene en la 'x' (basura final),
-// asi que devuelve false. No se modifica: es comportamiento actual.
-static void note_negative_hex() {
+// CRIT-A (corregido): el hex negativo funciona de forma explicita: "-0x10"
+// == -16 (la base 16 se detecta tras el signo). Semantica documentada: el
+// hex es el valor numerico del texto; los negativos se escriben con '-'.
+static void test_negative_hex() {
     bool ok = false;
     Value v;
-    ok = parse_value("-0x10", DataType::I32, v);
-    std::printf("  [nota] parse_value(\"-0x10\", i32) -> %s (hex negativo no soportado)\n",
-                ok ? "true" : "false");
+    ok = parse_value("-0x10", DataType::I32, v); CHECK(ok);
+    CHECK_EQ(value_as_int(v, DataType::I32), -16);
+    ok = parse_value("-0x7FFFFFFF", DataType::I32, v); CHECK(ok);
+    CHECK_EQ(value_as_int(v, DataType::I32), INT32_MIN + 1);
+    ok = parse_value("-0x80000000", DataType::I32, v); CHECK(ok);
+    CHECK_EQ(value_as_int(v, DataType::I32), INT32_MIN);
+    ok = parse_value("-0x80000001", DataType::I32, v); CHECK(!ok); // < INT32_MIN
+    // Los unsigned rechazan el signo (y por tanto el hex negativo)
+    ok = parse_value("-0x10", DataType::U32, v); CHECK(!ok);
 }
 
 int main() {
@@ -404,7 +439,8 @@ int main() {
     test_compare_ints();
     test_compare_floats();
     test_types_meta();
-    note_negative_hex();
+    test_negative_hex();
+    test_ptr_max();
 
     std::printf("\n== test_types: %d checks, %d fallos ==\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

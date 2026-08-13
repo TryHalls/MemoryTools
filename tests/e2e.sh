@@ -289,6 +289,24 @@ contains RES '= 30000' || fail "next changed no refleja el valor 30000"
 echo "OK: next changed encuentra 'dinero' (20000 -> 30000)"
 
 echo
+echo "== IMP-3: next con tipo distinto al first es rechazado"
+# El scan actual es numerico con first_type() = i32; un next con tipo u64
+# explicito debe rechazarse sin reinterpretar silenciosamente los candidatos.
+feed 'next 5 u64'
+wait_out 'El tipo del Next Scan debe coincidir con el First Scan' \
+    || fail "next con tipo incompatible no rechazado"
+sleep 0.5
+TAILT=$(tail -n 5 "$OUT")
+contains TAILT 'int32' || { echo "$TAILT"; fail "el mensaje no menciona el tipo del first (int32)"; }
+BASE=$(wc -l < "$OUT")
+feed 'count'
+wait_out 'coincidencias' || fail "la sesion no responde tras el rechazo"
+sleep 0.5
+TAILC=$(sed -n "$((BASE + 1)),\$p" "$OUT")
+contains TAILC 'coincidencias' || { echo "$TAILC"; fail "count no respondio despues del rechazo"; }
+echo "OK: next numerico con tipo distinto al first es rechazado (y la sesion sigue viva)"
+
+echo
 echo "== ADDRESS TABLE: add-result, read, set, save/clear/load, toggle =="
 TF=$(mktemp)
 feed 'table add-result 0 "dinero"'
@@ -701,6 +719,8 @@ feed3 "pointer scan $PTGT1 foo=1"
 wait_out3 'Opcion desconocida: foo=1' || fail "opcion desconocida no validada"
 feed3 "pointer scan $PTGT1 depth=0"
 wait_out3 'depth debe estar entre 1 y 7' || fail "depth=0 no validado"
+feed3 "pointer scan $PTGT1 max_offset=0x10000 offset_step=1"
+wait_out3 'demasiado grande' || fail "combinacion de offsets peligrosa no rechazada"
 
 echo "-- pointer scan con offsets (por defecto max_offset=0x100 step=0x8)"
 feed3 "pointer scan $PTGT1"
@@ -846,6 +866,21 @@ FIFO3=""; OUT3=""; TF4=""; PTF=""; PTF2=""
 kill "$PT2_PID" 2>/dev/null || true
 PT2_PID=""
 echo "OK: Pointer V2 CLI completo (scan offsets / add / resolve / tabla dinamica / ASLR / errores)"
+
+echo
+echo "== IMP-1: attach con PID gigante -> error normal (sin crash)"
+feed 'attach 999999999999999999999999'
+wait_out 'PID invalido o fuera de rango' \
+    || fail "PID gigante no produce error controlado"
+sleep 0.3
+BASE=$(wc -l < "$OUT")
+feed 'count'
+wait_out 'coincidencias' || fail "la sesion no responde despues del PID gigante"
+sleep 0.5
+TAILG=$(sed -n "$((BASE + 1)),\$p" "$OUT")
+contains TAILG 'coincidencias' \
+    || { echo "$TAILG"; fail "count no respondio despues del PID gigante"; }
+echo "OK: PID gigante -> error controlado y la sesion sigue viva"
 
 feed 'quit'
 sleep 0.5

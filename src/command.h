@@ -20,6 +20,24 @@
 
 namespace mt {
 
+// Limite de seguridad de la ventana de offsets del pointer scan (IMP-2 de la
+// auditoria de estabilizacion): floor(max_offset / offset_step) + 1 offsets
+// por objetivo debe ser <= kMaxOffsetShifts. Evita que una combinacion de
+// max_offset/offset_step (p. ej. 0x10000 con step 1) genere 65.537 posiciones
+// por objetivo y, multiplicadas por las fuentes del siguiente nivel, agote la
+// RAM del Chromebook.
+inline constexpr uint64_t kMaxOffsetShifts = 65536;
+
+// Mensaje de error si el tipo propuesto para el 'next' NUMERICO no coincide
+// con el tipo del 'first' (los valores y filtros se interpretan con el tipo
+// original del escaneo). Devuelve texto vacio si son compatibles. Funcion
+// pura, expuesta para tests (IMP-3 de la auditoria de estabilizacion).
+inline std::string next_type_mismatch_message(DataType first, DataType proposed) {
+    if (first == proposed) return {};
+    return std::string("El tipo del Next Scan debe coincidir con el First Scan (")
+           + type_name(first) + ").";
+}
+
 class Session;
 
 // Resultado de ejecutar un comando.

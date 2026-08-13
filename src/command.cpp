@@ -8,6 +8,8 @@
 #include "session.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -441,6 +443,16 @@ static CommandResult cmd_next(const CommandArgs& args, Session& s) {
             return {};
         }
         target = v;
+    }
+    // IMP-3 (auditoria de estabilizacion): el next numerico debe usar el
+    // mismo tipo que el first (los valores y filtros se interpretan con el
+    // tipo original del escaneo). Un tipo distinto se rechaza con mensaje
+    // claro en lugar de reinterpretar silenciosamente los candidatos.
+    const std::string type_err =
+        next_type_mismatch_message(s.scanner().first_type(), type);
+    if (!type_err.empty()) {
+        printf("%s\n", type_err.c_str());
+        return {};
     }
     s.set_scan_type(type);
 
@@ -1116,6 +1128,21 @@ PointerScanArgs parse_pointer_scan_args(const CommandArgs& args) {
         out.error = "Opcion desconocida: " + tok;
         return out;
     }
+
+    // IMP-2 (auditoria de estabilizacion): limite combinado de la ventana de
+    // offsets. floor(max_offset/offset_step)+1 offsets por objetivo; una
+    // combinacion como max_offset=0x10000 con offset_step=1 generaria 65.537
+    // posiciones por objetivo y, al multiplicarse por las fuentes del
+    // siguiente nivel, puede agotar la RAM del Chromebook (sin swap).
+    // (offset_step ya es >= 1 aqui: el 0 se rechazo antes.)
+    const uint64_t n_offsets = out.max_offset / out.offset_step + 1;
+    if (n_offsets > kMaxOffsetShifts) {
+        out.error = "La ventana de offsets es demasiado grande: " +
+                    std::to_string(n_offsets) + " offsets por objetivo "
+                    "(maximo " + std::to_string(kMaxOffsetShifts) +
+                    "). Reduce max_offset o aumenta offset_step.";
+        return out;
+    }
     return out;
 }
 
@@ -1464,7 +1491,29 @@ std::optional<int> resolve_target(const std::string& s) {
     bool numeric = !s.empty() &&
                    std::all_of(s.begin(), s.end(),
                                [](char c) { return c >= '0' && c <= '9'; });
-    if (numeric) return std::stoi(s);
+    if (numeric) {
+        // IMP-1 (auditoria de estabilizacion): un PID enorme antes crasheaba
+        // con std::stoi (std::out_of_range no capturado -> abort). Ahora se
+        // valida con strtol + ERANGE y el rango de int: solo se aceptan PIDs
+        // representables (1..INT_MAX; 0 se deja pasar para que attach 0 de el
+        // error normal "no existe el proceso").
+        errno = 0;
+        char* end = nullptr;
+        long v = std::strtol(s.c_str(), &end, 10);
+        if (end == s.c_str() || *end != '\0' || errno == ERANGE ||
+            v > INT_MAX) {
+            printf("PID invalido o fuera de rango: %s\n", s.c_str());
+            return std::nullopt;
+        }
+        return (int)v;
+    }
+    // Parece un numero con signo (no un nombre de proceso): error claro.
+    if (s.size() >= 2 && (s[0] == '-' || s[0] == '+') &&
+        std::all_of(s.begin() + 1, s.end(),
+                    [](char c) { return c >= '0' && c <= '9'; })) {
+        printf("PID invalido: %s\n", s.c_str());
+        return std::nullopt;
+    }
 
     std::vector<int> matches;
     for (const auto& p : list_processes())

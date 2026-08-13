@@ -98,6 +98,12 @@ public:
     bool warned() const { return warned_; }
     const std::vector<Candidate>& results() const { return candidates_; }
 
+    // Tipo usado en el PRIMER escaneo numerico (first). El 'next' numerico
+    // debe usar el mismo tipo (los valores/filtros se interpretan con el
+    // tipo original); la capa de comandos lo valida con
+    // next_type_mismatch_message() antes de llamar a next_scan.
+    DataType first_type() const { return type_; }
+
     // --- Valores dinamicos (string / bytes) -------------------------------
     // true si el ultimo escaneo (first o next) fue dinamico.
     bool is_dynamic() const { return dyn_spec_.has_value(); }

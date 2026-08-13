@@ -17,6 +17,7 @@
 #include "command.h"
 #include "session.h"
 
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -187,6 +188,29 @@ static void test_parse_pointer_scan_args() {
     CHECK(a.error.empty());
     CHECK_BITS(a.max_offset, 4);
     CHECK_BITS(a.offset_step, 8);
+
+    // IMP-2: limite combinado de la ventana de offsets (MAX_OFFSET_SHIFTS =
+    // 65536). n_offsets = floor(max_offset/offset_step) + 1.
+    // default (0x100/8): 33 offsets -> OK
+    a = parse_pointer_scan_args({"0x1234"});
+    CHECK(a.error.empty());
+    CHECK_BITS(a.max_offset, 0x100);
+    CHECK_BITS(a.offset_step, 8);
+    // max_offset = 0 -> ventana {0} (1 offset) -> OK
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0"});
+    CHECK(a.error.empty());
+    // exactamente 65536 offsets: 0xFFFF/1 + 1 == 65536 -> OK
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0xFFFF", "offset_step=1"});
+    CHECK(a.error.empty());
+    // 65537 offsets: 0x10000/1 + 1 == 65537 -> rechazado antes del scan
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0x10000", "offset_step=1"});
+    CHECK(!a.error.empty());
+    CHECK(a.error.find("demasiado grande") != std::string::npos);
+    CHECK(a.error.find("65537") != std::string::npos);
+    // con el step por defecto, el max_offset maximo (0x10000) sigue siendo
+    // seguro: 0x10000/8 + 1 == 8193 <= 65536
+    a = parse_pointer_scan_args({"0x1234", "max_offset=0x10000"});
+    CHECK(a.error.empty());
 
     // module-only
     a = parse_pointer_scan_args({"0x1234", "module-only"});
@@ -440,6 +464,47 @@ static void test_table_dynamic_errors() {
     CHECK(e->ptr->root.kind == PointerBaseKind::ABSOLUTE); // no persistente
 }
 
+// --- IMP-1: resolve_target con PIDs fuera de rango (sin crash) -------------
+
+static void test_resolve_target() {
+    // PID normal (numerico) -> se resuelve directamente
+    CHECK(resolve_target("1234").has_value());
+    CHECK_EQ(*resolve_target("1234"), 1234);
+    // PID 0: se acepta (attach 0 dara el error normal "no existe el proceso")
+    CHECK(resolve_target("0").has_value());
+    CHECK_EQ(*resolve_target("0"), 0);
+    // INT_MAX: representable -> aceptado
+    CHECK(resolve_target("2147483647").has_value());
+    CHECK_EQ(*resolve_target("2147483647"), INT_MAX);
+    // INT_MAX + 1 -> fuera de rango, error CLI normal (sin excepcion/crash)
+    CHECK(!resolve_target("2147483648").has_value());
+    // PID enorme (antes crasheaba: std::stoi -> std::out_of_range -> abort)
+    CHECK(!resolve_target("999999999999999999999999").has_value());
+    // con signo -> error claro, no busqueda por nombre
+    CHECK(!resolve_target("-5").has_value());
+    CHECK(!resolve_target("+5").has_value());
+    // texto no numerico -> busqueda por nombre (no existe) -> nullopt
+    CHECK(!resolve_target("nombre_inexistente_xyz").has_value());
+    // vacio -> nullopt
+    CHECK(!resolve_target("").has_value());
+}
+
+// --- IMP-3: mensaje de tipo incompatible en el next numerico ----------------
+
+static void test_next_type_mismatch() {
+    // tipos coincidentes -> sin mensaje
+    CHECK_STR(next_type_mismatch_message(DataType::I32, DataType::I32), "");
+    CHECK_STR(next_type_mismatch_message(DataType::F32, DataType::F32), "");
+    // distinto -> mensaje claro con el tipo del first
+    std::string m = next_type_mismatch_message(DataType::I32, DataType::U64);
+    CHECK(!m.empty());
+    CHECK(m.find("El tipo del Next Scan debe coincidir con el First Scan (int32).")
+          != std::string::npos);
+    m = next_type_mismatch_message(DataType::F64, DataType::I64);
+    CHECK(!m.empty());
+    CHECK(m.find("double") != std::string::npos);
+}
+
 // --- Persistencia del tipo 'pointer' en el formato de tabla v1 --------------
 
 static void test_ptr_save_load() {
@@ -472,6 +537,8 @@ int main() {
     test_pointer_resolve_errors();
     test_table_dynamic_errors();
     test_ptr_save_load();
+    test_resolve_target();
+    test_next_type_mismatch();
 
     std::printf("\n== test_pointer_cmd: %d checks, %d fallos ==\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

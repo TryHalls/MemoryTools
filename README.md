@@ -33,6 +33,7 @@ Completado el **motor básico de escaneo real** (etapas 1 a 8 del plan):
 | Visor hexadecimal (`view`) | ✅ (ETAPA 13, versión mínima) |
 | Escritura de memoria autorizada (`set`) | ✅ (ETAPA 17, versión mínima) |
 | Pattern/AOB scanner (wildcards) | ✅ (ETAPA 14) |
+| Strings y bytes (`first "…" string` / `first <hex> bytes` con wildcards) | ✅ |
 | Address Table (`table`, persistente) | ✅ (ETAPA 16, primera versión) |
 | Pointer Scanner (core + CLI) | ✅ (ETAPA 15, motor + comandos) |
 | Pointer V2: offsets + resolución dinámica | ✅ (scan con offsets, `pointer resolve`, `table read/set` dinámicos) |
@@ -142,9 +143,13 @@ detach                               Quitar proceso objetivo
 maps [pid]                           Mostrar regiones de memoria
 first <valor> [tipo]                 Primer escaneo (valor exacto)
 first unknown [tipo]                 Primer escaneo (valor desconocido)
+first "<texto>" string               Buscar un texto (bytes ASCII)
+first <hex...> bytes|pattern         Buscar bytes con wildcards ??
 next <valor> [tipo]                  Refinar resultados (igual)
 next changed|unchanged|increased|decreased
 next >|<|>=|<=|!= <valor> [tipo]     Refinar por comparación
+next "<texto>" string | <hex...> bytes|pattern   Refinar un escaneo dinámico (patrón nuevo)
+next changed|unchanged               (string/bytes: cambio exacto)
 count                                Número de coincidencias
 pattern <bytes>                      Buscar secuencia de bytes (AOB)
                                      Ej: 48 8B 05 ?? ?? ?? ?? 48 85 C0
@@ -171,7 +176,41 @@ help | quit
 Tipos: `i8 u8 i16 u16 i32 u32 i64 u64 f32 f64 ptr` (alias: `int`, `float`,
 `double`, `byte`, `pointer`, ...). Los valores numéricos se escriben en
 decimal o con prefijo `0x` para hexadecimal; las direcciones se aceptan con o
-sin `0x`.
+sin `0x`. El hexadecimal es el **valor numérico** del texto
+(`0xFFFFFFFF` = 4294967295); los negativos se escriben con `-`
+(`-0x1` = -1). Un valor fuera del rango del tipo se rechaza con un error
+(no se satura silenciosamente).
+
+## Strings y bytes (escaneo dinámico)
+
+El escáner First/Next soporta valores de **longitud variable** (string y
+patrones de bytes) sin tocar el camino numérico: los candidatos dinámicos
+solo guardan `address + longitud` (más los bytes de las posiciones `?`), y el
+patrón vive una sola vez en la especificación del escaneo (nada de copias por
+candidato).
+
+```text
+mt(1234)> first "hola memorytool" string
+First Scan: 1 coincidencias (string, len 15)
+mt(1234)> results
+[   0] 0x000055a92c9ab1e0  len 15  "hola memorytool" (string)
+
+mt(1234)> first 48 8B 05 ?? ?? bytes
+First Scan: 2 coincidencias (bytes, len 5)
+mt(1234)> next changed                       # bytes actuales != anteriores
+mt(1234)> next "mundo memorytool" string     # patrón nuevo sobre los candidatos
+```
+
+- **Encoding**: ASCII puro (los bytes del texto tal cual se almacenan en
+  memoria; sin conversión Unicode).
+- **Límite**: 4096 bytes (`kMaxDynamicLength`), compartido con el comando
+  `pattern`; un patrón mayor se rechaza.
+- **Wildcards**: en `bytes` se reutiliza el parser del Pattern/AOB
+  (`??` = cualquier byte); `string` no admite wildcards.
+- **`next` dinámico**: `changed`/`unchanged` comparan los bytes actuales con
+  los del escaneo anterior (incluidas las posiciones `?`); un patrón nuevo
+  exige coincidencia exacta. Los filtros numéricos (`>`, `<`, `increased`…)
+  no aplican a string/bytes y se rechazan con un mensaje claro.
 
 ## Address Table
 
@@ -492,6 +531,7 @@ MemoryTool/
 │   ├── test_pointer.cpp # Tests unitarios del Pointer Scanner (parte pura)
 │   ├── test_pointer_cmd.cpp  # Tests de la integracion pointer + CLI + tabla
 │   ├── test_pointer_v2.cpp  # Tests de la infraestructura V2 (bases, resolver, formatos)
+│   ├── test_dynamic.cpp # Tests de string/bytes (patrones, wildcards, límites, overlap)
 │   └── unit_tests.sh   # Compila y ejecuta los tests unitarios
 ├── CMakeLists.txt
 ├── build.sh            # Compilación sin CMake (g++ directo)
@@ -503,6 +543,10 @@ Detalles de diseño:
 - El escáner trabaja con **bytes y direcciones absolutas**; la interpretación
   del valor (int con signo, unsigned, float, double) se hace bajo demanda
   según el tipo. Por eso añadir tipos es barato.
+- El **tipo del `next` numérico debe coincidir con el del `first`**: los
+  valores y filtros se interpretan con el tipo original del escaneo; un tipo
+  distinto se rechaza con un mensaje claro en lugar de reinterpretar
+  silenciosamente los candidatos.
 - `first_scan` lee la memoria **por bloques** de 4 MiB con solapamiento, y
   guarda cada posición de byte que coincide (búsqueda no alineada, como un
   escáner real).
@@ -534,13 +578,16 @@ profundidad 1/2/3, nodos compartidos, ciclos por cadena, límites)`build/test_po
 opciones—, descripción textual de cadenas, `Session` conservando el último
 `PointerScanResult`, `pointer add` V2 creando la cadena dinámica
 (`PointerChainRef`) con su tipo final, `pointer resolve` y sus validaciones,
-y `table read`/`table set` dinámicos) y
-`build/test_pointer_v2` (conversión de raíz absoluta a `module+offset`,
+y `table read`/`table set` dinámicos)y `build/test_pointer_v2` (conversión de raíz absoluta a `module+offset`,
 cálculo inverso con módulo inexistente y offset fuera del módulo,
 resolución de cadenas con offsets `[0]`, `[0x20]` y `[0x20,0x18]` sobre
 buffers sintéticos, independencia entre el kind `pointer` y el `value_type`,
-y round-trip save/load v1+v2). Cada binario devuelve 0 si todo pasa y != 0
-si hay fallos; también pueden compilarse y ejecutarse a mano:
+y round-trip save/load v1+v2) y `build/test_dynamic` (parseo de string y
+bytes, wildcards, límites de longitud, `pattern_window_matches`, el overlap
+por bloques con un `Memory` falso, `changed`/`unchanged` y los casos de
+borde del parseo de valores: UINT64_MAX, overflow, hex negativo). Cada
+binario devuelve 0 si todo pasa y != 0 si hay fallos; también pueden
+compilarse y ejecutarse a mano:
 
 ```bash
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_types.cpp -o build/test_types
@@ -558,6 +605,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer_cmd.cpp \
 g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_pointer_v2.cpp \
     src/pointer_resolver.cpp src/address_table.cpp src/memory.cpp -o build/test_pointer_v2
 ./build/test_pointer_v2
+g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_dynamic.cpp \
+    src/pattern.cpp src/scanner.cpp src/memory.cpp -o build/test_dynamic
+./build/test_dynamic
 ```
 
 ### Test de extremo a extremo (proceso real)
@@ -571,8 +621,10 @@ La prueba lanza `objetivo`, le cambia el valor programáticamente y verifica
 que el escáner real encuentra la dirección exacta de `dinero` (comparándola
 con `&dinero`), la inspecciona y la modifica, comprobando que el proceso
 refleja el cambio. Cubre también First/Next Scan, `unknown`, `changed`,
-pattern scanner con y sin wildcards, los límites de candidatos (aviso a
-10 M, truncado a 20 M), la Address Table completa (add-result → read →
+pattern scanner con y sin wildcards, strings y bytes (`first "…" string` /
+`first <hex> bytes` con wildcards, `next changed`/`next unchanged`, y la
+validación de errores: string vacía, patrón inválido, filtros numéricos en
+dinámicos), los límites de candidatos (aviso a 10 M, truncado a 20 M), la Address Table completa (add-result → read →
 set verificado en el proceso → save → clear → load → toggle) y el Pointer
 Scanner contra `pointer_test` (depth 1/2/3 reconstruyendo
 `Node3->Node2->Node1->TARGET`, ciclo controlado sin cuelgues y sin cadenas
@@ -608,7 +660,7 @@ Siguiendo el plan original (ETAPAS del documento de diseño):
 | 9 | int8/16/64 y unsigned | ✅ |
 | 10 | float/double | ✅ |
 | 11 | Changed/Unchanged/Increased/Decreased | ✅ |
-| 12 | Strings y bytes | ⏳ (requiere ampliar `types`) |
+| 12 | Strings y bytes | ✅ (`first "<texto>" string` y `first <hex> bytes` con wildcards, límite 4096, ASCII) |
 | 13 | Memory Viewer completo | ◐ (versión mínima: `view`) |
 | 14 | Pattern/AOB Scanner | ✅ |
 | 15 | Pointer Scanner | ✅ (core + CLI; V2: offsets, resolver, `table read/set` dinámicos) |
