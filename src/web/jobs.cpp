@@ -85,6 +85,15 @@ void Job::request_cancel() {
     cancel_requested_.store(true, std::memory_order_relaxed);
 }
 
+ProgressFn Job::make_progress_callback() {
+    // Captura 'this': el worker mantiene un shared_ptr<Job> vivo durante toda
+    // la tarea, asi que el puntero es valido mientras el callback se use.
+    return [this](uint64_t scanned, uint64_t total) {
+        set_total_bytes(total);
+        set_bytes_scanned(scanned);
+    };
+}
+
 bool Job::transition(JobState from, JobState to) {
     int expected = static_cast<int>(from);
     return state_.compare_exchange_strong(expected, static_cast<int>(to),

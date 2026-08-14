@@ -1,5 +1,12 @@
 // jobs.h - Gestion de jobs asincronos (FASE W-1).
 //
+// (FASE W-2 PASO 6) Integracion con el core: el worker usa
+//   Job::cancel_flag()          -> const std::atomic<bool>* para el scanner
+//   Job::make_progress_callback() -> ProgressFn que actualiza bytes/total
+// El Job conserva SOLO estado, count, progreso, error y cancelacion; los
+// resultados grandes viven en Application/Session/Scanner.
+#include "../chunk.h"
+//
 // Infraestructura headless para la futura Web UI local: un Job representa
 // una operacion pesada (First/Next Scan, Pattern, Pointer Scan) que puede
 // tardar, y un JobRegistry gestiona su estado y ownership. Esta fase NO
@@ -58,6 +65,13 @@ public:
     std::string error() const;
     // Progreso 0-100. total==0 -> 0; bytes>total -> clamp a 100; sin overflow.
     double progress_percent() const;
+
+    // --- para el worker (integracion con el core) -------------------------
+    // Flag de cancelacion observable por el scanner (se comprueba por bloque).
+    const std::atomic<bool>* cancel_flag() const { return &cancel_requested_; }
+    // Callback de progreso que actualiza bytes_scanned/total_bytes del Job
+    // (thread-safe: total bajo mutex, scanned atomico). Sin throttling.
+    ProgressFn make_progress_callback();
 
     // --- mutadores (worker / capa superior) -------------------------------
     void set_total_bytes(uint64_t n);

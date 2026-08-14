@@ -4,12 +4,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p build
 
-g++ -std=c++17 -O2 -Wall -Wextra \
+g++ -std=c++17 -O2 -Wall -Wextra -pthread \
     src/main.cpp src/session.cpp src/command.cpp src/application.cpp \
     src/process.cpp \
     src/memory.cpp src/scanner.cpp src/pattern.cpp src/address_table.cpp \
     src/pointer.cpp src/pointer_resolver.cpp \
-    src/web/json.cpp src/web/jobs.cpp \
+    src/web/json.cpp src/web/jobs.cpp src/web/job_runner.cpp \
     -o build/memorytool
 
 g++ -std=c++17 -O0 -g -Wall -Wextra \

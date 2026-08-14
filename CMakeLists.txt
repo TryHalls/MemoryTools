@@ -23,9 +23,12 @@ add_executable(memorytool
   src/pointer_resolver.cpp
   src/web/json.cpp
   src/web/jobs.cpp
+  src/web/job_runner.cpp
 )
 target_include_directories(memorytool PRIVATE src)
 target_compile_options(memorytool PRIVATE -Wall -Wextra)
+find_package(Threads REQUIRED)
+target_link_libraries(memorytool PRIVATE Threads::Threads)
 
 # ---- Programas de prueba ----
 # -O0 y -g: facilitan las primeras pruebas (variables visibles, sin optimizacion)
