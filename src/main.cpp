@@ -10,12 +10,17 @@
 //   memorytool list       listar procesos
 //   memorytool maps <pid> mostrar regiones de memoria
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <string>
 
+#include "application.h"
 #include "command.h"
 #include "session.h"
+#include "web/job_runner.h"
+#include "web/jobs.h"
+#include "web/server.h"
 
 using namespace mt;
 
@@ -32,7 +37,51 @@ static void print_usage() {
         << "  memorytool <pid>               Sesion interactiva con proceso objetivo\n"
         << "  memorytool list                Listar procesos\n"
         << "  memorytool maps <pid>          Mostrar regiones de memoria\n"
+        << "  memorytool --web [--port N]    Web UI local (N=0: puerto libre)\n"
         << "  memorytool help                Esta ayuda\n";
+}
+
+// Modo servidor HTTP local (FASE W-3): arranca el servidor en 127.0.0.1,
+// imprime URL y token por consola y bloquea atendiendo requests. El token
+// solo se muestra aqui; toda request debe incluirlo en X-MemoryTool-Token.
+static int run_web(int argc, char** argv) {
+    uint16_t port = 0; // por defecto: puerto libre asignado por el kernel
+    for (int i = 2; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--port" && i + 1 < argc) {
+            errno = 0;
+            char* end = nullptr;
+            const long v = std::strtol(argv[++i], &end, 10);
+            if (errno == ERANGE || end == argv[i] || *end != '\0' ||
+                v < 0 || v > 65535) {
+                printf("Puerto invalido: %s\n", argv[i]);
+                return 1;
+            }
+            port = (uint16_t)v;
+        } else {
+            printf("Opcion desconocida: %s\n", a.c_str());
+            print_usage();
+            return 1;
+        }
+    }
+
+    Session session;
+    Application app(session);
+    web::JobRegistry jobs;
+    web::JobRunner runner(app, jobs);
+    web::WebServer server(app, jobs, runner);
+
+    std::string err;
+    if (!server.start(port, err)) {
+        fprintf(stderr, "Error: %s\n", err.c_str());
+        return 1;
+    }
+    printf("MemoryTool Web UI\n");
+    printf("URL: http://127.0.0.1:%u\n", server.port());
+    printf("Token: %s\n", server.token().c_str());
+    fflush(stdout);
+    server.run(); // bloquea hasta stop()/proceso terminado
+    return 0;
 }
 
 // Bucle principal de la sesion interactiva.
@@ -84,6 +133,10 @@ int main(int argc, char** argv) {
         if (!r) return 1;
         print_maps(*r);
         return 0;
+    }
+
+    if (argc >= 2 && std::string(arg1) == "--web") {
+        return run_web(argc, argv);
     }
 
     if (argc >= 2 && std::string(arg1) == "attach") {

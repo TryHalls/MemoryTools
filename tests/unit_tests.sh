@@ -64,6 +64,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src -pthread \
     src/memory.cpp src/web/jobs.cpp src/web/job_runner.cpp \
     -o build/test_job_runner
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_http.cpp src/web/http.cpp src/web/json.cpp \
+    -o build/test_http
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -100,6 +104,9 @@ echo "== test_cancel =="
 echo
 echo "== test_job_runner =="
 ./build/test_job_runner || ok=0
+echo
+echo "== test_http =="
+./build/test_http || ok=0
 
 if [ "$ok" = 1 ]; then
     echo
