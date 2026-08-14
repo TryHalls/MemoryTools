@@ -8,6 +8,12 @@
 //    direccion), comparando contra el valor anterior guardado. Asi un
 //    "first unknown" seguido de "next changed" es rapido aunque haya
 //    millones de candidatos.
+//
+// Cancelacion: todos los escaneos aceptan un flag atomico opcional. Si se
+// solicita cancelacion, el recorrido se detiene y se devuelve false SIN
+// publicar ningun resultado parcial: el escaneo se construye sobre vectores
+// locales y solo se sustituye el estado del Scanner al terminar
+// correctamente. Los resultados anteriores quedan intactos.
 #include "scanner.h"
 
 #include <algorithm>
@@ -25,28 +31,40 @@ void Scanner::clear() {
     warned_ = false;
 }
 
-void Scanner::first_scan_dynamic(Memory& mem,
+bool Scanner::first_scan_dynamic(Memory& mem,
                                  const std::vector<Region>& regions,
-                                 const DynamicScanSpec& spec) {
-    clear();
-    dyn_spec_ = spec;
+                                 const DynamicScanSpec& spec,
+                                 const std::atomic<bool>* cancel,
+                                 const ProgressFn& progress) {
     const size_t L = spec.length();
-    if (L == 0 || !spec.pattern.valid) return;
+    if (L == 0 || !spec.pattern.valid) {
+        // Comportamiento identico al anterior: se fija la especificacion y se
+        // dejan los resultados dinamicos vacios (no hay nada que escanear).
+        dyn_spec_ = spec;
+        dyn_candidates_.clear();
+        candidates_.clear();
+        truncated_ = false;
+        warned_ = false;
+        return true;
+    }
+
+    bool trunc = false;
+    bool warn = false;
+    std::vector<DynamicCandidate> found;
 
     auto emit = [&](uint64_t addr, const uint8_t* win) {
-        if (dyn_candidates_.size() >= kMaxCandidates) {
-            truncated_ = true;
+        if (found.size() >= kMaxCandidates) {
+            trunc = true;
             return false;
         }
-        if (!warned_ && dyn_candidates_.size() >= kWarnCandidates)
-            warned_ = true;
+        if (!warn && found.size() >= kWarnCandidates) warn = true;
         DynamicCandidate c;
         c.addr = addr;
         if (!spec.wild_pos.empty()) {
             c.prev_wild.reserve(spec.wild_pos.size());
             for (size_t p : spec.wild_pos) c.prev_wild.push_back(win[p]);
         }
-        dyn_candidates_.push_back(std::move(c));
+        found.push_back(std::move(c));
         return true;
     };
 
@@ -55,15 +73,31 @@ void Scanner::first_scan_dynamic(Memory& mem,
     for_each_window(mem, regions, L, 1, [&](const uint8_t* win, uint64_t addr) {
         if (!pattern_window_matches(win, spec.pattern)) return true;
         return emit(addr, win);
-    });
+    }, cancel, progress);
+
+    if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+
+    if (progress && !trunc) {
+        const uint64_t t = readable_total(regions);
+        progress(t, t);
+    }
+
+    dyn_candidates_.swap(found);
+    dyn_spec_ = spec;
+    truncated_ = trunc;
+    warned_ = warn;
+    candidates_.clear();
+    return true;
 }
 
-void Scanner::next_scan_dynamic(Memory& mem, Filter filter,
-                                const std::optional<DynamicScanSpec>& newspec) {
-    if (!dyn_spec_) return;
+bool Scanner::next_scan_dynamic(Memory& mem, Filter filter,
+                                const std::optional<DynamicScanSpec>& newspec,
+                                const std::atomic<bool>* cancel,
+                                const ProgressFn& progress) {
+    if (!dyn_spec_) return true;
     const DynamicScanSpec& base = newspec ? *newspec : *dyn_spec_;
     const size_t L = base.length();
-    if (L == 0 || !base.pattern.valid) return;
+    if (L == 0 || !base.pattern.valid) return true;
     const BytePattern& pat = base.pattern;
     const bool compare_prev =
         (filter == Filter::CHANGED || filter == Filter::UNCHANGED);
@@ -85,6 +119,7 @@ void Scanner::next_scan_dynamic(Memory& mem, Filter filter,
     size_t i = 0;
     const size_t n = dyn_candidates_.size();
     while (i < n) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) return false;
         const uint64_t chunk_start = dyn_candidates_[i].addr;
         ssize_t got = mem.read(chunk_start, buf.data(), kChunk + L - 1);
         if (got <= 0) {
@@ -134,26 +169,34 @@ void Scanner::next_scan_dynamic(Memory& mem, Filter filter,
             }
             ++i;
         }
+        if (progress) progress((uint64_t)i * L, (uint64_t)n * L);
     }
+    if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+
+    if (progress) progress((uint64_t)n * L, (uint64_t)n * L);
 
     dyn_candidates_.swap(next);
     if (newspec) dyn_spec_ = *newspec;
+    return true;
 }
 
-void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
-                         DataType type, const std::optional<Value>& target) {
-    clear();
-    type_ = type;
+bool Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
+                         DataType type, const std::optional<Value>& target,
+                         const std::atomic<bool>* cancel,
+                         const ProgressFn& progress) {
     const size_t w = type_size(type);
 
+    bool trunc = false;
+    bool warn = false;
+    std::vector<Candidate> found;
+
     auto emit = [&](uint64_t addr, Value v) {
-        if (candidates_.size() >= kMaxCandidates) {
-            truncated_ = true;
+        if (found.size() >= kMaxCandidates) {
+            trunc = true;
             return false;
         }
-        if (!warned_ && candidates_.size() >= kWarnCandidates)
-            warned_ = true;
-        candidates_.push_back({addr, v});
+        if (!warn && found.size() >= kWarnCandidates) warn = true;
+        found.push_back({addr, v});
         return true;
     };
 
@@ -165,12 +208,28 @@ void Scanner::first_scan(Memory& mem, const std::vector<Region>& regions,
         Value v = value_from_bytes(win, w);
         if (target && !value_equal(v, *target, type)) return true;
         return emit(addr, v);
-    });
+    }, cancel, progress);
+
+    if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+
+    if (progress && !trunc) {
+        const uint64_t t = readable_total(regions);
+        progress(t, t);
+    }
+
+    candidates_.swap(found);
+    type_ = type;
+    truncated_ = trunc;
+    warned_ = warn;
+    dyn_spec_.reset();
+    dyn_candidates_.clear();
+    return true;
 }
 
-void Scanner::next_scan(Memory& mem, DataType type, Filter filter,
-                        const std::optional<Value>& target) {
-    type_ = type;
+bool Scanner::next_scan(Memory& mem, DataType type, Filter filter,
+                        const std::optional<Value>& target,
+                        const std::atomic<bool>* cancel,
+                        const ProgressFn& progress) {
     const size_t w = type_size(type);
 
     // Los candidatos deben estar ordenados por direccion para el recorrido
@@ -192,6 +251,7 @@ void Scanner::next_scan(Memory& mem, DataType type, Filter filter,
     size_t i = 0;
     const size_t n = candidates_.size();
     while (i < n) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) return false;
         const uint64_t chunk_start = candidates_[i].addr;
         const uint64_t window = kChunk + (w - 1);
         ssize_t got = mem.read(chunk_start, buf.data(), window);
@@ -238,9 +298,15 @@ void Scanner::next_scan(Memory& mem, DataType type, Filter filter,
             }
             ++i;
         }
+        if (progress) progress((uint64_t)i * w, (uint64_t)n * w);
     }
+    if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+
+    if (progress) progress((uint64_t)n * w, (uint64_t)n * w);
 
     candidates_.swap(next);
+    type_ = type;
+    return true;
 }
 
 } // namespace mt

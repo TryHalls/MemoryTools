@@ -7,16 +7,24 @@
 // proceso, y el acceso a la tabla de la sesion.
 //
 // Compilar:
-//   g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_application.cpp \
-//       src/application.cpp src/session.cpp src/address_table.cpp \
-//       src/pointer_resolver.cpp src/memory.cpp \
+//   g++ -std=c++17 -O2 -Wall -Wextra -I src tests/test_application.cpp
+//       src/application.cpp src/session.cpp src/address_table.cpp
+//       src/pointer_resolver.cpp src/memory.cpp
 //       -o build/test_application
 // Ejecutar: ./build/test_application   (0 = exito, !=0 = fallo)
 #include "application.h"
 #include "session.h"
 
+#include <atomic>
 #include <cstdio>
+#include <csignal>
+#include <cstdint>
 #include <string>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <utility>
+#include <vector>
 
 using namespace mt;
 
@@ -175,6 +183,155 @@ static void test_resolve_entry_errors() {
     CHECK(!o2.error.empty());
 }
 
+// --- Cancelacion + progreso a traves de Application (proceso real) ---------
+
+// Lanza un proceso hijo que concede ptrace (PR_SET_PTRACER_ANY) y guarda un
+// valor conocido en una variable estatica; comunica su direccion por un pipe
+// (fork duplica el espacio de direcciones: la direccion es valida en el hijo).
+// Devuelve el PID (o -1 si falla); 'addr_out' recibe la direccion del valor.
+static pid_t spawn_target(uint64_t& addr_out) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return -1;
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+    if (pid == 0) {
+        close(pipefd[0]);
+        prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+        static uint64_t g_val = 0x1122334455667788ull;
+        const uint64_t p = (uintptr_t)&g_val; // la DIRECCION, no el valor
+        (void)write(pipefd[1], &p, sizeof p);
+        close(pipefd[1]);
+        for (;;) pause(); // mantener vivo hasta que el padre lo mate
+        _exit(0);
+    }
+    close(pipefd[1]);
+    const ssize_t n = read(pipefd[0], &addr_out, sizeof addr_out);
+    close(pipefd[0]);
+    if (n != (ssize_t)sizeof addr_out) {
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        return -1;
+    }
+    return pid;
+}
+
+static void test_scan_cancel_and_progress() {
+    uint64_t addr = 0;
+    const pid_t pid = spawn_target(addr);
+    CHECK(pid > 0);
+    if (pid <= 0) return;
+
+    Session s;
+    Application app(s);
+    AttachOutcome a = app.attach((int)pid);
+    CHECK(a.ok);
+    if (!a.ok) { // sin permiso ptrace: no dejar huerfanos y terminar
+        kill(pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        return;
+    }
+
+    const Value known{0x1122334455667788ull};
+
+    // I) cancel=nullptr: comportamiento actual (first normal encuentra el valor).
+    ScanOutcome f = app.first_scan(DataType::U64, known);
+    CHECK(f.ok);
+    CHECK(!f.cancelled);
+    CHECK(f.count >= 1);
+    const size_t prev = s.scanner().count();
+
+    // B) first con cancel preactivo: cancelado, sin resultado parcial y con el
+    //    resultado anterior del Scanner intacto (H).
+    std::atomic<bool> cancel{true};
+    ScanOutcome fc = app.first_scan(DataType::U64, known, &cancel);
+    CHECK(fc.cancelled);
+    CHECK(!fc.ok);
+    CHECK_EQ(fc.count, 0);
+    CHECK_EQ(s.scanner().count(), prev);
+
+    // next normal sin cancel: unchanged conserva todos los candidatos (el
+    // valor no ha cambiado) -> count == prev.
+    cancel.store(false);
+    ScanOutcome n = app.next_scan(DataType::U64, Filter::UNCHANGED, std::nullopt);
+    CHECK(n.ok);
+    CHECK(!n.cancelled);
+    CHECK_EQ(n.count, prev);
+
+    // C) next cancelado: conserva exactamente los candidatos anteriores.
+    cancel.store(true);
+    ScanOutcome nc = app.next_scan(DataType::U64, Filter::UNCHANGED, std::nullopt,
+                                   &cancel);
+    CHECK(nc.cancelled);
+    CHECK(!nc.ok);
+    CHECK_EQ(s.scanner().count(), prev);
+
+    // D) first dinamico cancelado (el resultado numerico anterior sigue intacto).
+    std::string perr;
+    DynamicScanSpec dspec =
+        make_dynamic_spec(DataType::STRING, pattern_from_text("hola", perr));
+    cancel.store(true);
+    ScanOutcome fd = app.first_scan_dynamic(dspec, &cancel);
+    CHECK(fd.cancelled);
+    CHECK(!fd.ok);
+    CHECK_EQ(s.scanner().count(), prev);
+
+    // E) pattern cancelado: hits vacios y cancelled (nunca parcial).
+    BytePattern pat;
+    CHECK(parse_pattern("48 8B 05", pat));
+    cancel.store(true);
+    PatternOutcome po = app.pattern_scan(pat, &cancel);
+    CHECK(po.cancelled);
+    CHECK(!po.ok);
+    CHECK_EQ(po.hits.size(), 0);
+
+    // F) pointer scan cancelado: no publica nada; el resultado previo de la
+    //    sesion queda intacto.
+    PointerScanResult synth;
+    synth.target = 0x4242;
+    PointerChain c;
+    c.nodes = {0x10, 0x4242};
+    c.offsets = {0};
+    c.depth = 1;
+    synth.chains.push_back(c);
+    s.set_pointer_result(std::move(synth));
+
+    PointerScanInput pin;
+    pin.opts.target = addr; // region legible del proceso vivo
+    pin.opts.max_depth = 1;
+    pin.value_type = DataType::U64;
+    cancel.store(true);
+    PointerScanOutcome psc = app.pointer_scan(pin, &cancel);
+    CHECK(psc.cancelled);
+    CHECK(!psc.ok);
+    CHECK(s.pointer_result().has_value());
+    CHECK_BITS(s.pointer_result()->target, 0x4242); // preservado
+
+    // G) el progreso llega a Application: monotónico, nunca supera el total y
+    //    termina en 100% al completar normalmente.
+    cancel.store(false);
+    std::vector<std::pair<uint64_t, uint64_t>> prog;
+    ProgressFn progress = [&](uint64_t scanned, uint64_t total) {
+        prog.emplace_back(scanned, total);
+    };
+    ScanOutcome fp = app.first_scan(DataType::U64, known, nullptr, progress);
+    CHECK(fp.ok);
+    CHECK(!fp.cancelled);
+    CHECK(!prog.empty());
+    for (size_t i = 1; i < prog.size(); ++i)
+        CHECK(prog[i].first >= prog[i - 1].first); // monotónico
+    for (const auto& pr : prog) CHECK(pr.first <= pr.second); // <= total
+    CHECK(prog.back().first == prog.back().second);           // 100% al terminar
+
+    // Limpieza: detach y matar al hijo (no dejar procesos huerfanos).
+    app.detach();
+    kill(pid, SIGKILL);
+    waitpid(pid, nullptr, 0);
+}
+
 // --- Helpers puros reutilizables --------------------------------------------
 
 static void test_parse_addr() {
@@ -201,6 +358,7 @@ int main() {
     test_no_process_errors();
     test_add_pointer_chain();
     test_resolve_entry_errors();
+    test_scan_cancel_and_progress();
     test_parse_addr();
     test_next_type_mismatch();
 

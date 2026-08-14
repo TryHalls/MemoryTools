@@ -1,6 +1,7 @@
 // scanner.h - Motor de escaneo progresivo (First Scan / Next Scan).
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -116,29 +117,46 @@ public:
     // wildcards) en las regiones legibles. Es una busqueda no alineada que
     // usa for_each_window (los patrones que cruzan el limite entre bloques
     // se encuentran gracias al overlap).
-    void first_scan_dynamic(Memory& mem, const std::vector<Region>& regions,
-                            const DynamicScanSpec& spec);
+    //
+    // Devuelve true si el escaneo termino (completado o truncado) y false si
+    // fue cancelado; en ese caso los resultados anteriores se conservan
+    // intactos (nunca se publica un resultado parcial).
+    // cancel: flag atomico opcional; se comprueba por bloque.
+    // progress: callback opcional (bytes_scanned, total_bytes), por bloque.
+    bool first_scan_dynamic(Memory& mem, const std::vector<Region>& regions,
+                            const DynamicScanSpec& spec,
+                            const std::atomic<bool>* cancel = nullptr,
+                            const ProgressFn& progress = {});
 
     // Refina un escaneo dinamico previo.
     //  - Filter::EXACT: exige newspec (patron nuevo); compara contra el.
     //  - Filter::CHANGED / UNCHANGED: compara los bytes actuales con los
     //    'anteriores' (patron anterior en posiciones exactas + prev_wild en
     //    las posiciones '?'). Los demas filtros no tienen sentido aqui.
-    void next_scan_dynamic(Memory& mem, Filter filter,
-                           const std::optional<DynamicScanSpec>& newspec);
+    // Devuelve true/false como first_scan_dynamic (false = cancelado).
+    bool next_scan_dynamic(Memory& mem, Filter filter,
+                           const std::optional<DynamicScanSpec>& newspec,
+                           const std::atomic<bool>* cancel = nullptr,
+                           const ProgressFn& progress = {});
 
     // Primer escaneo sobre las regiones legibles.
     //  - target con valor: busca coincidencias exactas de ese valor.
     //  - target vacio ("unknown"): guarda TODAS las posiciones legibles con
     //    su valor actual, para luego usar filtros de cambio.
     // Las direcciones se guardan alineadas a byte, en orden de memoria.
-    void first_scan(Memory& mem, const std::vector<Region>& regions,
-                    DataType type, const std::optional<Value>& target);
+    // Devuelve true/false como first_scan_dynamic (false = cancelado).
+    bool first_scan(Memory& mem, const std::vector<Region>& regions,
+                    DataType type, const std::optional<Value>& target,
+                    const std::atomic<bool>* cancel = nullptr,
+                    const ProgressFn& progress = {});
 
     // Refina el resultado anterior aplicando un filtro.
     // target es obligatorio para EXACT/GREATER/LESS/GE/LE/NE.
-    void next_scan(Memory& mem, DataType type, Filter filter,
-                   const std::optional<Value>& target);
+    // Devuelve true/false como first_scan_dynamic (false = cancelado).
+    bool next_scan(Memory& mem, DataType type, Filter filter,
+                   const std::optional<Value>& target,
+                   const std::atomic<bool>* cancel = nullptr,
+                   const ProgressFn& progress = {});
 
 private:
     std::vector<Candidate> candidates_;

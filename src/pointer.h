@@ -16,13 +16,25 @@
 //
 // El modulo NO hace attach/detach: recibe un Memory ya abierto (la
 // Session/CLI se encarga del ciclo ptrace).
+//
+// Cancelacion: pointer_scan acepta un flag atomico opcional que se comprueba
+// al comienzo de cada nivel, tras cada recorrido por bloques y antes de
+// extender cadenas (ademas del check por bloque dentro de for_each_window).
+// Si se cancela se devuelve un resultado con cancelled = true y sin cadenas
+// (nunca se publica un resultado parcial); el resultado anterior de la
+// sesion queda intacto.
 #pragma once
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "chunk.h"
 #include "memory.h"
 #include "types.h"
 
@@ -88,6 +100,7 @@ struct PointerScanResult {
     std::vector<PointerChain> chains;
     bool edges_truncated = false;  // se alcanzo max_edges_per_level en un nivel
     bool chains_truncated = false; // se alcanzo max_chains
+    bool cancelled = false;        // true si el escaneo fue cancelado
     int levels = 0;                // niveles completados con resultados
     size_t total_edges = 0;        // aristas encontradas en total
     DataType value_type = DataType::I32; // tipo del valor final (para add)
@@ -127,13 +140,6 @@ struct PointerChainRef {
     DataType value_type = DataType::I32;
 };
 
-// Busca cadenas de punteros hacia opts.target en las regiones dadas.
-// mem debe estar ya abierta. Usa current_set (hash plano) para comprobar si
-// un valor leido pertenece al conjunto objetivo del nivel actual, y la
-// frontera incremental para construir las cadenas completas.
-PointerScanResult pointer_scan(Memory& mem, const std::vector<Region>& regions,
-                               const PointerScanOptions& opts);
-
 // --- Funciones puras (expuestas para tests unitarios) ----------------------
 
 // Conjunto hash plano (open addressing) para pertenencia O(1). El valor 0 se
@@ -163,5 +169,160 @@ private:
 std::vector<PointerChain> extend_chains(const std::vector<PointerChain>& frontier,
                                         const std::vector<PointerEdge>& edges_sorted,
                                         size_t max_chains, bool& chains_truncated);
+
+// --- Escaneo ----------------------------------------------------------------
+
+// Busca cadenas de punteros hacia opts.target en las regiones dadas.
+// mem debe estar ya abierta. Usa current_set (hash plano) para comprobar si
+// un valor leido pertenece al conjunto objetivo del nivel actual, y la
+// frontera incremental para construir las cadenas completas.
+//
+// cancel: flag atomico opcional; se comprueba al comienzo de cada nivel,
+// tras el recorrido por bloques del nivel y antes de extender cadenas
+// (ademas del check por bloque dentro de for_each_window). Si se activa, se
+// devuelve un resultado con cancelled = true y sin cadenas (no se publica
+// ningun resultado parcial).
+// progress: callback opcional (bytes_scanned, total_bytes). El total es la
+// suma de bytes de las regiones fuente por el numero de niveles; el progreso
+// es monotonico, nunca supera el total y llega a 100% al completar
+// normalmente (no llega a 100% si se cancela).
+// 'Mem' es generico (igual que for_each_window) para poder testear el
+// recorrido con un fake; los llamadores reales pasan un Memory&.
+template <typename Mem>
+PointerScanResult pointer_scan(Mem& mem, const std::vector<Region>& regions,
+                               const PointerScanOptions& opts,
+                               const std::atomic<bool>* cancel = nullptr,
+                               const ProgressFn& progress = {}) {
+    PointerScanResult res;
+    res.target = opts.target;
+    if (opts.target == 0 || opts.max_depth <= 0) return res;
+
+    std::vector<Region> source = select_pointer_regions(regions, opts.include_code);
+    if (opts.min_addr || opts.max_addr) {
+        std::vector<Region> filtered;
+        for (Region r : source) { // copia para recortar al rango
+            if (opts.max_addr && r.start >= opts.max_addr) continue;
+            if (opts.min_addr && r.end <= opts.min_addr) continue;
+            if (opts.min_addr && r.start < opts.min_addr) r.start = opts.min_addr;
+            if (opts.max_addr && r.end > opts.max_addr) r.end = opts.max_addr;
+            if (r.end > r.start) filtered.push_back(r);
+        }
+        source = std::move(filtered);
+    }
+
+    std::vector<uint64_t> current_values{opts.target};
+    FlatHashSet current_set(current_values);
+    const uint64_t step = opts.offset_step == 0 ? 1 : opts.offset_step;
+
+    std::vector<PointerChain> frontier;
+    frontier.push_back(PointerChain{{opts.target}, {}, 0});
+
+    // Progreso: total = bytes de las regiones fuente por nivel x max_depth
+    // (cada nivel recorre las mismas regiones fuente).
+    const uint64_t level_total = readable_total(source);
+    const uint64_t grand_total =
+        level_total * (uint64_t)std::max(opts.max_depth, 1);
+    uint64_t scanned_prev = 0; // bytes cubiertos en niveles anteriores
+
+    auto is_cancelled = [&]() -> bool {
+        return cancel && cancel->load(std::memory_order_relaxed);
+    };
+    // Resultado cancelado: sin cadenas parciales y sin flags de truncado.
+    auto finish_cancelled = [&]() -> PointerScanResult {
+        res.chains.clear();
+        res.levels = 0;
+        res.total_edges = 0;
+        res.edges_truncated = false;
+        res.chains_truncated = false;
+        res.cancelled = true;
+        return res;
+    };
+
+    for (int d = 1; d <= opts.max_depth; ++d) {
+        // 0) Check de cancelacion al comienzo de cada nivel (entre niveles).
+        if (is_cancelled()) return finish_cancelled();
+
+        // 0b) Conjunto desplazado: { t - o : t in current_values, o en
+        //     ventana }. Permite comprobar una posicion con UNA sola busqueda
+        //     y ampliar a los offsets solo cuando hay coincidencia (evita
+        //     |posiciones| x |ventana| busquedas por nivel).
+        std::vector<uint64_t> shifted_vals;
+        shifted_vals.reserve(current_values.size() *
+                             ((opts.max_offset / step) + 1));
+        for (uint64_t t : current_values)
+            for (uint64_t o = 0; o <= opts.max_offset; o += step)
+                shifted_vals.push_back(t - o);
+        FlatHashSet shifted(std::move(shifted_vals));
+
+        // 1) Escanear regiones fuente: posiciones alineadas a 8 bytes cuyo
+        //    valor V satisface (V + o) in current_set para algun offset o.
+        std::vector<PointerEdge> edges;
+        bool stopped = false;
+        auto cb = [&](const uint8_t* win, uint64_t addr) -> bool {
+            uint64_t v;
+            std::memcpy(&v, win, sizeof(v));
+            if (!shifted.contains(v)) return true;
+            for (uint64_t o = 0; o <= opts.max_offset; o += step) {
+                if (current_set.contains(v + o)) {
+                    edges.push_back(PointerEdge{addr, v + o, o});
+                    if (edges.size() >= opts.max_edges_per_level) {
+                        res.edges_truncated = true;
+                        stopped = true;
+                        return false; // detener todo el recorrido
+                    }
+                }
+            }
+            return true;
+        };
+        // El progreso del nivel se suma a los niveles anteriores: global.
+        auto level_progress = [&](uint64_t s, uint64_t /*t*/) {
+            if (progress) progress(scanned_prev + s, grand_total);
+        };
+        for_each_window(mem, source, 8, 8, cb, cancel, level_progress);
+
+        // 2) Check tras el recorrido del nivel (cancel durante el nivel).
+        if (is_cancelled()) return finish_cancelled();
+
+        if (edges.empty()) break; // sin referencias nuevas: fin del escaneo
+        res.levels = d;
+        res.total_edges += edges.size();
+
+        // 3) Indice por target (y offset) para la extension de la frontera.
+        std::sort(edges.begin(), edges.end(),
+                  [](const PointerEdge& a, const PointerEdge& b) {
+                      if (a.target != b.target) return a.target < b.target;
+                      if (a.offset != b.offset) return a.offset < b.offset;
+                      return a.source < b.source;
+                  });
+
+        // 4) Check antes de extender cadenas.
+        if (is_cancelled()) return finish_cancelled();
+
+        // 5) Extender la frontera un nivel hacia atras.
+        bool ctrunc = false;
+        std::vector<PointerChain> next =
+            extend_chains(frontier, edges, opts.max_chains, ctrunc);
+        if (ctrunc) res.chains_truncated = true;
+        if (next.empty()) break;
+
+        res.chains.insert(res.chains.end(), next.begin(), next.end());
+        frontier = std::move(next);
+
+        // 6) Siguiente nivel: S_d = fuentes de este nivel.
+        std::vector<uint64_t> srcs;
+        srcs.reserve(edges.size());
+        for (const PointerEdge& e : edges) srcs.push_back(e.source);
+        current_values = srcs;
+        current_set.build(std::move(srcs));
+
+        scanned_prev += level_total; // base de progreso del siguiente nivel
+        if (stopped) break; // el nivel se trunco: no tiene sentido continuar
+    }
+
+    // 100% solo si termino normalmente (nunca al cancelar).
+    if (progress && !is_cancelled() && grand_total > 0)
+        progress(grand_total, grand_total);
+    return res;
+}
 
 } // namespace mt

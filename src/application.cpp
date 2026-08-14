@@ -97,18 +97,23 @@ OperationResult Application::detach() {
 }
 
 ScanOutcome Application::first_scan(DataType type,
-                                    const std::optional<Value>& target) {
+                                    const std::optional<Value>& target,
+                                    const std::atomic<bool>* cancel,
+                                    const ProgressFn& progress) {
     ScanOutcome o;
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
         auto regions = parse_maps(session_.pid());
-        session_.scanner().first_scan(mem, regions, type, target);
+        bool done =
+            session_.scanner().first_scan(mem, regions, type, target, cancel, progress);
+        if (!done) o.cancelled = true;
     }, err);
     if (!ok) {
         o.ok = false;
         o.error = err;
         return o;
     }
+    if (o.cancelled) return o; // ok=false, count=0: nunca se publica parcial
     o.ok = true;
     o.count = session_.scanner().count();
     o.truncated = session_.scanner().truncated();
@@ -117,17 +122,22 @@ ScanOutcome Application::first_scan(DataType type,
 }
 
 ScanOutcome Application::next_scan(DataType type, Filter filter,
-                                   const std::optional<Value>& target) {
+                                   const std::optional<Value>& target,
+                                   const std::atomic<bool>* cancel,
+                                   const ProgressFn& progress) {
     ScanOutcome o;
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
-        session_.scanner().next_scan(mem, type, filter, target);
+        bool done = session_.scanner().next_scan(mem, type, filter, target, cancel,
+                                                 progress);
+        if (!done) o.cancelled = true;
     }, err);
     if (!ok) {
         o.ok = false;
         o.error = err;
         return o;
     }
+    if (o.cancelled) return o; // conserva exactamente los candidatos anteriores
     o.ok = true;
     o.count = session_.scanner().count();
     o.truncated = session_.scanner().truncated();
@@ -135,18 +145,23 @@ ScanOutcome Application::next_scan(DataType type, Filter filter,
     return o;
 }
 
-ScanOutcome Application::first_scan_dynamic(const DynamicScanSpec& spec) {
+ScanOutcome Application::first_scan_dynamic(const DynamicScanSpec& spec,
+                                            const std::atomic<bool>* cancel,
+                                            const ProgressFn& progress) {
     ScanOutcome o;
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
         auto regions = parse_maps(session_.pid());
-        session_.scanner().first_scan_dynamic(mem, regions, spec);
+        bool done = session_.scanner().first_scan_dynamic(mem, regions, spec,
+                                                          cancel, progress);
+        if (!done) o.cancelled = true;
     }, err);
     if (!ok) {
         o.ok = false;
         o.error = err;
         return o;
     }
+    if (o.cancelled) return o;
     o.ok = true;
     o.count = session_.scanner().count();
     o.truncated = session_.scanner().truncated();
@@ -155,17 +170,21 @@ ScanOutcome Application::first_scan_dynamic(const DynamicScanSpec& spec) {
 }
 
 ScanOutcome Application::next_scan_dynamic(
-    Filter filter, const std::optional<DynamicScanSpec>& newspec) {
+    Filter filter, const std::optional<DynamicScanSpec>& newspec,
+    const std::atomic<bool>* cancel, const ProgressFn& progress) {
     ScanOutcome o;
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
-        session_.scanner().next_scan_dynamic(mem, filter, newspec);
+        bool done = session_.scanner().next_scan_dynamic(mem, filter, newspec,
+                                                         cancel, progress);
+        if (!done) o.cancelled = true;
     }, err);
     if (!ok) {
         o.ok = false;
         o.error = err;
         return o;
     }
+    if (o.cancelled) return o;
     o.ok = true;
     o.count = session_.scanner().count();
     o.truncated = session_.scanner().truncated();
@@ -173,12 +192,18 @@ ScanOutcome Application::next_scan_dynamic(
     return o;
 }
 
-PatternOutcome Application::pattern_scan(const BytePattern& pat) {
+PatternOutcome Application::pattern_scan(const BytePattern& pat,
+                                         const std::atomic<bool>* cancel,
+                                         const ProgressFn& progress) {
     PatternOutcome o;
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
         auto regions = parse_maps(session_.pid());
-        auto res = scan_pattern(mem, regions, pat);
+        auto res = scan_pattern(mem, regions, pat, cancel, progress);
+        if (res.cancelled) {
+            o.cancelled = true;
+            return; // nunca se publican hits parciales
+        }
         o.hits = std::move(res.hits);
         o.truncated = res.truncated;
     }, err);
@@ -187,6 +212,7 @@ PatternOutcome Application::pattern_scan(const BytePattern& pat) {
         o.error = err;
         return o;
     }
+    if (o.cancelled) return o;
     o.ok = true;
     return o;
 }
@@ -417,7 +443,9 @@ AddressEntry* Application::entry(size_t idx) {
 
 // --- Pointer Scanner --------------------------------------------------------
 
-PointerScanOutcome Application::pointer_scan(const PointerScanInput& in) {
+PointerScanOutcome Application::pointer_scan(const PointerScanInput& in,
+                                             const std::atomic<bool>* cancel,
+                                             const ProgressFn& progress) {
     PointerScanOutcome o;
     const std::vector<Region> regions = parse_maps(session_.pid());
     auto r = region_at(regions, in.opts.target);
@@ -438,10 +466,16 @@ PointerScanOutcome Application::pointer_scan(const PointerScanInput& in) {
 
     std::string err;
     bool ok = session_.with_memory([&](Memory& mem) {
-        o.result = mt::pointer_scan(mem, regions, in.opts);
+        o.result = mt::pointer_scan(mem, regions, in.opts, cancel, progress);
     }, err);
     if (!ok) {
         o.error = err;
+        return o;
+    }
+    if (o.result.cancelled) {
+        // No se publica nada: ni session_.pointer_result() ni filtros. El
+        // resultado anterior de la sesion queda intacto.
+        o.cancelled = true;
         return o;
     }
     o.result.value_type = in.value_type;

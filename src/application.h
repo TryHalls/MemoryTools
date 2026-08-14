@@ -18,13 +18,16 @@
 // concurrencia, cancelacion y progreso despues sin cambiar su forma.
 #pragma once
 
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "chunk.h"
 #include "pattern.h"
 #include "pointer.h"
 #include "session.h"
@@ -83,6 +86,7 @@ struct ScanOutcome {
     size_t count = 0;
     bool truncated = false;
     bool warned = false;
+    bool cancelled = false; // la operacion fue interrumpida (sin resultado parcial)
 };
 
 struct PatternOutcome {
@@ -90,6 +94,7 @@ struct PatternOutcome {
     std::string error;
     std::vector<uint64_t> hits;
     bool truncated = false;
+    bool cancelled = false; // la operacion fue interrumpida (hits vacios)
 };
 
 struct ReadBytesOutcome {
@@ -154,6 +159,7 @@ struct PointerScanInput {
 struct PointerScanOutcome {
     bool ok = false;
     std::string error;
+    bool cancelled = false; // la operacion fue interrumpida (result no se publica)
     PointerScanResult result;
 };
 
@@ -190,13 +196,29 @@ public:
     int pid() const { return session_.pid(); }
 
     // --- Escaneos ---------------------------------------------------------
-    ScanOutcome first_scan(DataType type, const std::optional<Value>& target);
+    // Todos aceptan opcionalmente un flag atomico de cancelacion y un
+    // callback de progreso (bytes_scanned, total_bytes). Si cancel se activa,
+    // la operacion se interrumpe, el outcome se devuelve con cancelled = true
+    // y NO se publica ningun resultado parcial (el estado previo de la
+    // sesion queda intacto). cancel/progress se reenvian tal cual al core;
+    // el throttle de progreso lo decidira la futura capa de jobs.
+    ScanOutcome first_scan(DataType type, const std::optional<Value>& target,
+                           const std::atomic<bool>* cancel = nullptr,
+                           const ProgressFn& progress = {});
     ScanOutcome next_scan(DataType type, Filter filter,
-                          const std::optional<Value>& target);
-    ScanOutcome first_scan_dynamic(const DynamicScanSpec& spec);
+                          const std::optional<Value>& target,
+                          const std::atomic<bool>* cancel = nullptr,
+                          const ProgressFn& progress = {});
+    ScanOutcome first_scan_dynamic(const DynamicScanSpec& spec,
+                                   const std::atomic<bool>* cancel = nullptr,
+                                   const ProgressFn& progress = {});
     ScanOutcome next_scan_dynamic(Filter filter,
-                                  const std::optional<DynamicScanSpec>& newspec);
-    PatternOutcome pattern_scan(const BytePattern& pat);
+                                  const std::optional<DynamicScanSpec>& newspec,
+                                  const std::atomic<bool>* cancel = nullptr,
+                                  const ProgressFn& progress = {});
+    PatternOutcome pattern_scan(const BytePattern& pat,
+                                const std::atomic<bool>* cancel = nullptr,
+                                const ProgressFn& progress = {});
 
     // --- Memoria ----------------------------------------------------------
     ReadBytesOutcome read_bytes(uint64_t addr, size_t len);
@@ -218,7 +240,9 @@ public:
     const AddressTable& table() const { return session_.table(); }
 
     // --- Pointer Scanner --------------------------------------------------
-    PointerScanOutcome pointer_scan(const PointerScanInput& in);
+    PointerScanOutcome pointer_scan(const PointerScanInput& in,
+                                    const std::atomic<bool>* cancel = nullptr,
+                                    const ProgressFn& progress = {});
     AddChainOutcome add_pointer_chain(size_t chain_index,
                                       const std::string& description);
     ResolveEntryOutcome resolve_entry(size_t idx);

@@ -53,6 +53,10 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src -pthread \
     tests/test_jobs.cpp src/web/jobs.cpp \
     -o build/test_jobs
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src \
+    tests/test_cancel.cpp src/pattern.cpp src/pointer.cpp \
+    -o build/test_cancel
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -83,6 +87,9 @@ echo "== test_json =="
 echo
 echo "== test_jobs =="
 ./build/test_jobs || ok=0
+echo
+echo "== test_cancel =="
+./build/test_cancel || ok=0
 
 if [ "$ok" = 1 ]; then
     echo

@@ -1,14 +1,12 @@
 // pattern.cpp - Pattern / AOB scanner.
 //
-// Busca una secuencia de bytes (con wildcards "??") en las regiones legibles
-// del proceso objetivo. La busqueda es no alineada: se comprueba cada
-// posicion de byte, igual que un AOB scanner clasico. Las regiones se leen
-// por bloques con solapamiento para no perder coincidencias en los limites.
+// El recorrido por bloques de scan_pattern vive en pattern.h como template
+// (igual que for_each_window) para poder testearlo con memoria fake; aqui
+// queda unicamente el parseo de patrones.
 #include "pattern.h"
 
-#include <algorithm>
-
-#include "chunk.h"
+#include <string>
+#include <vector>
 
 namespace mt {
 
@@ -72,31 +70,6 @@ bool parse_pattern(const std::string& text, BytePattern& out) {
 
     out.valid = true;
     return true;
-}
-
-PatternScanResult scan_pattern(Memory& mem, const std::vector<Region>& regions,
-                               const BytePattern& pat) {
-    PatternScanResult res;
-    if (!pat.valid || pat.size() == 0) return res;
-
-    constexpr size_t kMaxHits = 5u * 1000u * 1000u;
-    const size_t w = pat.size();
-
-    // Recorrido por bloques con solapamiento: ver chunk.h. El callback
-    // devuelve false para detener el recorrido al alcanzar el limite de
-    // resultados. El orden de las direcciones visitadas es identico al de
-    // la implementacion anterior.
-    for_each_window(mem, regions, w, [&](const uint8_t* win, uint64_t addr) {
-        if (pattern_window_matches(win, pat)) {
-            res.hits.push_back(addr);
-            if (res.hits.size() >= kMaxHits) {
-                res.truncated = true;
-                return false; // detener todo el recorrido
-            }
-        }
-        return true;
-    });
-    return res;
 }
 
 } // namespace mt

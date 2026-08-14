@@ -1,4 +1,8 @@
-// pointer.cpp - Implementacion del Pointer Scanner (level-scan inverso).
+// pointer.cpp - Implementacion de las partes no-template del Pointer
+// Scanner: clasificacion de regiones, FlatHashSet y la frontera incremental.
+// El escaneo completo (pointer_scan, con cancelacion y progreso) vive en
+// pointer.h como template (igual que for_each_window y scan_pattern) para
+// poder testearlo con memoria fake sin proceso real.
 //
 // Algoritmo (un nivel por iteracion):
 //   1. Escanear las regiones fuente por posiciones alineadas a 8 bytes;
@@ -14,10 +18,7 @@
 #include "pointer.h"
 
 #include <algorithm>
-#include <cstring>
 #include <utility>
-
-#include "chunk.h"
 
 namespace mt {
 
@@ -144,102 +145,6 @@ std::vector<PointerChain> extend_chains(const std::vector<PointerChain>& frontie
         if (chains_truncated) break;
     }
     return out;
-}
-
-// --- Escaneo ----------------------------------------------------------------
-
-PointerScanResult pointer_scan(Memory& mem, const std::vector<Region>& regions,
-                               const PointerScanOptions& opts) {
-    PointerScanResult res;
-    res.target = opts.target;
-    if (opts.target == 0 || opts.max_depth <= 0) return res;
-
-    std::vector<Region> source = select_pointer_regions(regions, opts.include_code);
-    if (opts.min_addr || opts.max_addr) {
-        std::vector<Region> filtered;
-        for (Region r : source) { // copia para recortar al rango
-            if (opts.max_addr && r.start >= opts.max_addr) continue;
-            if (opts.min_addr && r.end <= opts.min_addr) continue;
-            if (opts.min_addr && r.start < opts.min_addr) r.start = opts.min_addr;
-            if (opts.max_addr && r.end > opts.max_addr) r.end = opts.max_addr;
-            if (r.end > r.start) filtered.push_back(r);
-        }
-        source = std::move(filtered);
-    }
-
-    std::vector<uint64_t> current_values{opts.target};
-    FlatHashSet current_set(current_values);
-    const uint64_t step = opts.offset_step == 0 ? 1 : opts.offset_step;
-
-    std::vector<PointerChain> frontier;
-    frontier.push_back(PointerChain{{opts.target}, {}, 0});
-
-    for (int d = 1; d <= opts.max_depth; ++d) {
-        // 0) Conjunto desplazado: { t - o : t in current_values, o en ventana }.
-        //    Permite comprobar una posicion con UNA sola busqueda y ampliar a
-        //    los offsets solo cuando hay coincidencia (evita |posiciones| x
-        //    |ventana| busquedas por nivel).
-        std::vector<uint64_t> shifted_vals;
-        shifted_vals.reserve(current_values.size() *
-                             ((opts.max_offset / step) + 1));
-        for (uint64_t t : current_values)
-            for (uint64_t o = 0; o <= opts.max_offset; o += step)
-                shifted_vals.push_back(t - o);
-        FlatHashSet shifted(std::move(shifted_vals));
-
-        // 1) Escanear regiones fuente: posiciones alineadas a 8 bytes cuyo
-        //    valor V satisface (V + o) in current_set para algun offset o.
-        std::vector<PointerEdge> edges;
-        bool stopped = false;
-        auto cb = [&](const uint8_t* win, uint64_t addr) -> bool {
-            uint64_t v;
-            std::memcpy(&v, win, sizeof(v));
-            if (!shifted.contains(v)) return true;
-            for (uint64_t o = 0; o <= opts.max_offset; o += step) {
-                if (current_set.contains(v + o)) {
-                    edges.push_back(PointerEdge{addr, v + o, o});
-                    if (edges.size() >= opts.max_edges_per_level) {
-                        res.edges_truncated = true;
-                        stopped = true;
-                        return false; // detener todo el recorrido
-                    }
-                }
-            }
-            return true;
-        };
-        for_each_window(mem, source, 8, 8, cb);
-        if (edges.empty()) break; // sin referencias nuevas: fin del escaneo
-        res.levels = d;
-        res.total_edges += edges.size();
-
-        // 2) Indice por target (y offset) para la extension de la frontera.
-        std::sort(edges.begin(), edges.end(),
-                  [](const PointerEdge& a, const PointerEdge& b) {
-                      if (a.target != b.target) return a.target < b.target;
-                      if (a.offset != b.offset) return a.offset < b.offset;
-                      return a.source < b.source;
-                  });
-
-        // 3) Extender la frontera un nivel hacia atras.
-        bool ctrunc = false;
-        std::vector<PointerChain> next =
-            extend_chains(frontier, edges, opts.max_chains, ctrunc);
-        if (ctrunc) res.chains_truncated = true;
-        if (next.empty()) break;
-
-        res.chains.insert(res.chains.end(), next.begin(), next.end());
-        frontier = std::move(next);
-
-        // 4) Siguiente nivel: S_d = fuentes de este nivel.
-        std::vector<uint64_t> srcs;
-        srcs.reserve(edges.size());
-        for (const PointerEdge& e : edges) srcs.push_back(e.source);
-        current_values = srcs;
-        current_set.build(std::move(srcs));
-
-        if (stopped) break; // el nivel se trunco: no tiene sentido continuar
-    }
-    return res;
 }
 
 } // namespace mt
