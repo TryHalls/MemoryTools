@@ -16,8 +16,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "../process.h"
-#include "json.h"
+#include "http.h"
 
 namespace mt {
 namespace web {
@@ -195,113 +194,12 @@ void WebServer::handle_connection(int fd) {
     send_all(fd, route(req));
 }
 
-// --- JSON de un Job ----------------------------------------------------------
-
-namespace {
-
-json::JsonValue job_json(const Job& j) {
-    return json::JsonValue::make_object({
-        {"id", json::JsonValue::make_uint(j.id())},
-        {"kind", json::JsonValue::make_string(j.kind())},
-        {"state", json::JsonValue::make_string(job_state_name(j.state()))},
-        {"cancel_requested", json::JsonValue::make_bool(j.cancel_requested())},
-        {"bytes_scanned", json::JsonValue::make_uint(j.bytes_scanned())},
-        {"total_bytes", json::JsonValue::make_uint(j.total_bytes())},
-        {"count", json::JsonValue::make_uint(j.count())},
-        {"progress", json::JsonValue::make_double(j.progress_percent())},
-        {"elapsed_ms", json::JsonValue::make_int(j.elapsed_ms())},
-        {"error", json::JsonValue::make_string(j.error())},
-    });
-}
-
-} // namespace
-
 std::string WebServer::route(const HttpRequest& req) {
-    // GET /api/status
-    if (req.path == "/api/status" && req.method == "GET") {
-        json::JsonValue job = json::JsonValue::make_null();
-        const uint64_t jid = jobs_.active_job_id();
-        if (jid) {
-            if (const auto j = jobs_.get(jid)) job = job_json(*j);
-        }
-        const json::JsonValue v = json::JsonValue::make_object({
-            {"ok", json::JsonValue::make_bool(true)},
-            {"attached", json::JsonValue::make_bool(app_.has_pid())},
-            {"pid", json::JsonValue::make_int(app_.pid())},
-            {"runner_busy", json::JsonValue::make_bool(runner_.busy())},
-            {"job", std::move(job)},
-        });
-        return make_response(200, "application/json", json::write(v));
-    }
-
-    // GET /api/processes
-    if (req.path == "/api/processes" && req.method == "GET") {
-        json::JsonValue::Array items;
-        for (const auto& p : list_processes()) {
-            items.push_back(json::JsonValue::make_object({
-                {"pid", json::JsonValue::make_int(p.pid)},
-                {"name", json::JsonValue::make_string(p.name)},
-                {"user", json::JsonValue::make_string(p.user)},
-                {"state", json::JsonValue::make_string(std::string(1, p.state))},
-                {"rss_kb", json::JsonValue::make_int(p.rss_kb)},
-                {"accessible", json::JsonValue::make_bool(p.accessible)},
-            }));
-        }
-        return make_response(200, "application/json",
-                             json::write(json::JsonValue::make_array(std::move(items))));
-    }
-
-    // /api/jobs/<id>[/cancel]
-    if (req.path.rfind("/api/jobs/", 0) == 0) {
-        std::string rest = req.path.substr(10); // despues de "/api/jobs/"
-        bool want_cancel = false;
-        if (rest.size() > 7 && rest.compare(rest.size() - 7, 7, "/cancel") == 0) {
-            want_cancel = true;
-            rest = rest.substr(0, rest.size() - 7);
-        }
-        if (rest.empty()) {
-            return make_response(404, "application/json", json_error("job no encontrado"));
-        }
-        for (char c : rest) {
-            if (c < '0' || c > '9')
-                return make_response(404, "application/json",
-                                     json_error("job no encontrado"));
-        }
-        errno = 0;
-        char* end = nullptr;
-        const unsigned long long id = std::strtoull(rest.c_str(), &end, 10);
-        if (errno == ERANGE || end == rest.c_str() || *end != '\0')
-            return make_response(404, "application/json",
-                                 json_error("job no encontrado"));
-        const auto j = jobs_.get(id);
-        if (!j)
-            return make_response(404, "application/json",
-                                 json_error("job no encontrado"));
-        if (want_cancel) {
-            if (req.method != "POST")
-                return make_response(405, "application/json",
-                                     json_error("metodo no soportado"));
-            const bool ok = jobs_.request_cancel(id);
-            const json::JsonValue v = json::JsonValue::make_object({
-                {"ok", json::JsonValue::make_bool(ok)},
-                {"job", job_json(*j)},
-            });
-            return make_response(200, "application/json", json::write(v));
-        }
-        if (req.method != "GET")
-            return make_response(405, "application/json",
-                                 json_error("metodo no soportado"));
-        return make_response(200, "application/json",
-                             json::write(job_json(*j)));
-    }
-
-    // Metodo no permitido en una ruta conocida de esta fase.
-    if (req.path == "/api/status" || req.path == "/api/processes")
-        return make_response(405, "application/json",
-                             json_error("metodo no soportado"));
-
-    return make_response(404, "application/json",
-                         json_error("ruta no encontrada"));
+    // Todo el enrutado y la construccion de JSON viven en la capa Api
+    // (src/web/api.cpp). El servidor solo valida token/Host (handle_connection)
+    // y serializa la respuesta.
+    const ApiResponse r = api_.handle(req);
+    return make_response(r.status, "application/json", r.body);
 }
 
 } // namespace web

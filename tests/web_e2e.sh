@@ -62,8 +62,9 @@ out=$(curl -s -w '\n%{http_code}' -H "X-MemoryTool-Token: $TOKEN" "$URL/api/proc
 code=$(printf '%s' "$out" | tail -1)
 body=$(printf '%s' "$out" | sed '$d')
 check "processes 200" test "$code" = "200"
-check "processes array" grep -q '^\[.*\]$' <<<"$body"
-check "processes contenido" grep -q '"pid":' <<<"$body"
+check "processes ok" grep -q '"ok":true' <<<"$body"
+check "processes array" grep -q '"processes":\[' <<<"$body"
+check "processes contenido" grep -q '"pid":"' <<<"$body"
 
 # 3) GET /api/jobs/1 inexistente -> 404
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-MemoryTool-Token: $TOKEN" "$URL/api/jobs/1")

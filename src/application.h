@@ -230,6 +230,8 @@ public:
     size_t add_result_entry(size_t result_index, const std::string& desc);
     bool remove_entry(size_t idx);
     void clear_entries();
+    // Invierte el estado habilitado de una entrada. Devuelve false si no existe.
+    bool toggle_entry(size_t idx);
     bool save_table(const std::string& path, std::string& err);
     bool load_table(const std::string& path, std::string& err);
     EntryReadOutcome read_entry(size_t idx);

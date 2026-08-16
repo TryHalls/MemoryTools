@@ -68,6 +68,15 @@ g++ -std=c++17 -O2 -Wall -Wextra -I src \
     tests/test_http.cpp src/web/http.cpp src/web/json.cpp \
     -o build/test_http
 
+g++ -std=c++17 -O2 -Wall -Wextra -I src -pthread \
+    tests/test_api.cpp \
+    src/application.cpp src/session.cpp src/scanner.cpp src/pattern.cpp \
+    src/address_table.cpp src/pointer.cpp src/pointer_resolver.cpp \
+    src/memory.cpp src/process.cpp \
+    src/web/json.cpp src/web/jobs.cpp src/web/job_runner.cpp \
+    src/web/http.cpp src/web/api.cpp \
+    -o build/test_api
+
 ok=1
 echo "== test_types =="
 ./build/test_types || ok=0
@@ -107,6 +116,9 @@ echo "== test_job_runner =="
 echo
 echo "== test_http =="
 ./build/test_http || ok=0
+echo
+echo "== test_api =="
+./build/test_api || ok=0
 
 if [ "$ok" = 1 ]; then
     echo

@@ -192,10 +192,18 @@ bool JobRegistry::fail(uint64_t id, const std::string& error) {
 bool JobRegistry::request_cancel(uint64_t id) {
     const auto j = get(id);
     if (!j) return false;
+    const JobState s = j->state();
     // QUEUED -> CANCELLED directamente (nunca llego a ejecutarse);
-    // RUNNING -> solo el flag (el worker lo observa y terminara el job).
-    if (j->state() == JobState::QUEUED) return j->cancel();
-    j->request_cancel();
+    // RUNNING -> solo el flag (el worker lo observa y terminara el job);
+    // terminal (COMPLETED/FAILED/CANCELLED) -> nada que cancelar: no marcar
+    // el flag. Evita que un shutdown() posterior a la transicion terminal
+    // (pero antes de liberar el slot del worker) manche cancel_requested()
+    // de un job que ya termino.
+    if (s == JobState::QUEUED) return j->cancel();
+    if (s == JobState::RUNNING) {
+        j->request_cancel();
+        return true;
+    }
     return true;
 }
 

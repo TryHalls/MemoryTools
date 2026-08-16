@@ -289,6 +289,13 @@ void Application::clear_entries() {
     session_.table().clear();
 }
 
+bool Application::toggle_entry(size_t idx) {
+    AddressEntry* e = session_.table().get(idx);
+    if (!e) return false;
+    e->enabled = !e->enabled;
+    return true;
+}
+
 bool Application::save_table(const std::string& path, std::string& err) {
     return session_.table().save(path, err);
 }

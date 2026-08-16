@@ -26,6 +26,7 @@ add_executable(memorytool
   src/web/job_runner.cpp
   src/web/http.cpp
   src/web/server.cpp
+  src/web/api.cpp
 )
 target_include_directories(memorytool PRIVATE src)
 target_compile_options(memorytool PRIVATE -Wall -Wextra)

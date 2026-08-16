@@ -24,6 +24,7 @@
 #include <string>
 
 #include "../application.h"
+#include "api.h"
 #include "http.h"
 #include "job_runner.h"
 #include "jobs.h"
@@ -34,7 +35,7 @@ namespace web {
 class WebServer {
 public:
     WebServer(Application& app, JobRegistry& jobs, JobRunner& runner)
-        : app_(app), jobs_(jobs), runner_(runner) {}
+        : app_(app), jobs_(jobs), runner_(runner), api_(app, jobs, runner) {}
 
     // Crea el socket, hace bind en 127.0.0.1:<port> (0 = puerto libre del
     // kernel) y escucha. Genera el token de la ejecucion. Devuelve false y
@@ -65,6 +66,7 @@ private:
     Application& app_;
     JobRegistry& jobs_;
     JobRunner& runner_;
+    Api api_;
     int listen_fd_ = -1;
     uint16_t port_ = 0;
     std::string token_;
