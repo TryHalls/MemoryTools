@@ -186,11 +186,30 @@ body {
 /* --- paneles por pestaña ----------------------------------------------------- */
 .tabpanel { display: none; }
 .tabpanel.active { display: flex; flex-direction: column; gap: 10px; }
-#panel-scan, #panel-memory, #panel-table {
+#panel-scan, #panel-memory, #panel-table, #panel-pattern, #panel-pointers {
   padding: 14px 16px;
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* --- pointers ----------------------------------------------------------------- */
+.badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  vertical-align: middle;
+}
+.b-module { background: #1e3a5f; color: #9ecbff; }
+.b-absolute { background: #3a2f1e; color: #ffd48a; }
+.b-pers { background: #1e3a2a; color: #8affc2; }
+.b-nopers { background: #3a1e1e; color: #ff9a9a; }
+.chain-arrow { color: var(--muted); }
+#vt-pointer .vt-row { height: 28px; }
+#vt-pointer .col-val { overflow: visible; }
+.sel-line { margin: 2px 0; }
 
 /* --- memory viewer ----------------------------------------------------------- */
 .mem-region {
@@ -234,6 +253,32 @@ body {
   flex: 0 0 auto;
 }
 .tbl-detail.hidden { display: none; }
+
+/* Panel de detalle de una fila de resultados seleccionada (scan/pattern). */
+.sel-detail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.sel-detail.hidden { display: none; }
+.sel-detail .addr { color: var(--accent); }
+.sel-detail .muted { color: var(--muted); }
+
+/* Labels ocultas segun el modo (p. ej. Pattern vs Text en la pestana Pattern). */
+.scan-controls label.hidden { display: none; }
+
+/* Filas de la tabla virtual seleccionables. */
+.vt-row.clickable { cursor: pointer; }
+.vt-row.clickable:hover { background: var(--panel2); }
+.vt-row.selected { background: #22334a; }
 .tbl-detail .old { color: var(--muted); text-decoration: line-through; }
 .tbl-detail .new { color: var(--green); }
 .tbl-detail .err { color: var(--red); }

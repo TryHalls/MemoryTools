@@ -38,6 +38,16 @@
       <button class="tab active" data-tab="scan">Scan</button>
       <button class="tab" data-tab="memory">Memory</button>
       <button class="tab" data-tab="table">Address Table</button>
+      <button class="tab" data-tab="pattern">Pattern</button>
+      <button class="tab" data-tab="pointers">Pointers</button>
+    </div>
+
+    <!-- Job box global: un solo job pesado a la vez, visible en toda pestaña. -->
+    <div id="job-box" class="job-box hidden">
+      <span id="job-state" class="job-state">--</span>
+      <div class="job-bar"><div id="job-fill" class="job-fill"></div></div>
+      <span id="job-info" class="job-info"></span>
+      <button id="btn-cancel" class="btn small danger">Cancel</button>
     </div>
 
     <!-- ============ PESTAÑA SCAN ============ -->
@@ -77,13 +87,7 @@
         <button id="btn-unknown" class="btn">UNKNOWN</button>
       </div>
 
-      <div id="job-box" class="job-box hidden">
-        <span id="job-state" class="job-state">--</span>
-        <div class="job-bar"><div id="job-fill" class="job-fill"></div></div>
-        <span id="job-info" class="job-info"></span>
-        <button id="btn-cancel" class="btn small danger">Cancel</button>
-      </div>
-
+      <div id="scan-detail" class="sel-detail hidden"></div>
       <div class="results-head">
         <span class="col-addr">Address</span>
         <span class="col-val">Value</span>
@@ -157,6 +161,82 @@
           <tbody id="tbl-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <!-- ============ PESTAÑA PATTERN ============ -->
+    <section id="panel-pattern" class="tabpanel">
+      <div class="scan-controls">
+        <label>Modo
+          <select id="pat-mode">
+            <option value="aob">AOB / Bytes</option>
+            <option value="string">String</option>
+          </select>
+        </label>
+        <label id="pat-pattern-label">Pattern
+          <input id="pat-pattern" type="text" placeholder="48 8B ?? ?? 48 85 C0">
+        </label>
+        <label id="pat-text-label" class="hidden">Text
+          <input id="pat-text" type="text" placeholder="hola memorytool">
+        </label>
+        <button id="btn-pat-scan" class="btn primary">Scan</button>
+        <label>Next
+          <select id="pat-filter">
+            <option value="changed">changed</option>
+            <option value="unchanged">unchanged</option>
+            <option value="exact" selected>exact</option>
+          </select>
+        </label>
+        <button id="btn-pat-next" class="btn">Next</button>
+      </div>
+      <div id="pat-detail" class="sel-detail hidden"></div>
+      <div class="results-head">
+        <span class="col-addr">Address</span>
+        <span id="pat-col-val" class="col-val">Match</span>
+        <span id="pat-col-type" class="col-type"></span>
+      </div>
+      <div id="vt-pattern" class="vt"></div>
+    </section>
+
+    <!-- ============ PESTAÑA POINTERS ============ -->
+    <section id="panel-pointers" class="tabpanel">
+      <div class="scan-controls">
+        <label>Target
+          <input id="ptr-target" type="text" placeholder="0x...">
+        </label>
+        <label>Depth
+          <input id="ptr-depth" type="text" value="3" size="3">
+        </label>
+        <label>Max Offset
+          <input id="ptr-maxoff" type="text" value="0x100" size="6">
+        </label>
+        <label>Step
+          <input id="ptr-step" type="text" value="8" size="3">
+        </label>
+        <label class="chk"><input id="ptr-module" type="checkbox"> Module only</label>
+        <label class="chk"><input id="ptr-code" type="checkbox"> Include code</label>
+        <label>Value type
+          <select id="ptr-vtype">
+            <option value="int32" selected>int32</option>
+            <option value="int8">int8</option>
+            <option value="int16">int16</option>
+            <option value="int64">int64</option>
+            <option value="uint8">uint8</option>
+            <option value="uint16">uint16</option>
+            <option value="uint32">uint32</option>
+            <option value="uint64">uint64</option>
+            <option value="float">float</option>
+            <option value="double">double</option>
+          </select>
+        </label>
+        <button id="btn-ptr-scan" class="btn primary">SCAN POINTERS</button>
+      </div>
+      <div id="ptr-detail" class="sel-detail hidden"></div>
+      <div class="results-head">
+        <span class="col-addr">#</span>
+        <span class="col-val">Depth</span>
+        <span class="col-type">Chain</span>
+      </div>
+      <div id="vt-pointer" class="vt"></div>
     </section>
   </main>
 </div>

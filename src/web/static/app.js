@@ -52,6 +52,7 @@ const state = {
   pid: 0,
   jobId: 0,
   jobTimer: null,
+  jobOnComplete: null, // callback al terminar el job (refresh de la tabla correcta)
   cancelInFlight: false,
   selectedPid: null,
   resultsTotal: 0,
@@ -176,6 +177,8 @@ async function detach() {
     footer("Detach correcto.");
     await refreshStatus();
     vt.clear();
+    patVt.clear();
+    ptrVt.clear();
   } catch (e) {
     footer("Detach fallo: " + e.message, true);
   }
@@ -198,7 +201,7 @@ async function firstScan(unknown) {
     if (!v) { footer("Introduce un valor para el First Scan", true); return; }
     body.value = v;
   }
-  await launchScan("/api/scan/first", body, "first");
+  await launchScan("/api/scan/first", body, () => vt.reload());
 }
 
 async function nextScan() {
@@ -211,14 +214,14 @@ async function nextScan() {
     if (!v) { footer("Introduce un valor para exact", true); return; }
     body.value = v;
   }
-  await launchScan("/api/scan/next", body, "next");
+  await launchScan("/api/scan/next", body, () => vt.reload());
 }
 
-async function launchScan(path, body, kind) {
+async function launchScan(path, body, onComplete) {
   try {
     const d = await apiPost(path, body);
     if (d.job_id) {
-      startPolling(d.job_id);
+      startPolling(d.job_id, onComplete);
     } else {
       footer("Sin job_id en la respuesta", true);
     }
@@ -229,9 +232,10 @@ async function launchScan(path, body, kind) {
 
 /* ============================ JOB POLLING ================================ */
 
-function startPolling(jobId) {
+function startPolling(jobId, onComplete) {
   stopPolling();
   state.jobId = jobId;
+  state.jobOnComplete = onComplete || null;
   state.cancelInFlight = false;
   showJobBox(true);
   setJobState("queued", 0, 0, 0);
@@ -285,10 +289,14 @@ function finishJob(msg, d) {
     footer(msg, true);
     return;
   }
-  // COMPLETED: el resultado ya vive en el servidor; refresca la tabla.
+  // COMPLETED: el resultado ya vive en el servidor; refresca la tabla que
+  // lanzo el job (scan o pattern).
   state.scanDone = true;
   footer("Scan completado.");
-  vt.reload();
+  const cb = state.jobOnComplete;
+  state.jobOnComplete = null;
+  if (cb) cb();
+  else vt.reload();
   refreshStatus();
 }
 
@@ -309,10 +317,26 @@ async function cancelJob() {
 
 // Tabla virtual sin librerias: el backend es la fuente de verdad. Mantiene un
 // pool de filas DOM reutilizadas y pide paginas de resultados bajo demanda
-// (GET /api/results?offset=...&limit=80). Nunca crea un elemento por fila.
+// (GET <endpoint>?offset=...&limit=80). Nunca crea un elemento por fila.
+//
+// Opciones:
+//   endpoint   ruta de paginacion (default /api/results)
+//   renderRow  (item) -> [addr, val, type]  (personaliza las 3 columnas)
+//   onRowClick (item) -> void               (click en una fila)
+//   htmlCells  true si renderRow devuelve HTML escapado (para badges)
 class VirtualTable {
   constructor(containerId, opts) {
     this.el = $(containerId);
+    this.endpoint = (opts && opts.endpoint) || "/api/results";
+    this.htmlCells = !!(opts && opts.htmlCells);
+    this.renderRow =
+      (opts && opts.renderRow) ||
+      ((item) => [
+        item.address,
+        item.value !== undefined ? item.value : "",
+        item.type || "",
+      ]);
+    this.onRowClick = (opts && opts.onRowClick) || null;
     this.rowHeight = opts.rowHeight || 24;
     this.pageSize = opts.pageSize || 80;
     this.overscan = opts.overscan || 8;
@@ -331,12 +355,7 @@ class VirtualTable {
     // Pool fijo de filas DOM.
     this.pool = [];
     for (let i = 0; i < this.visible; i++) {
-      const r = document.createElement("div");
-      r.className = "vt-row";
-      r.innerHTML =
-        '<span class="col-addr"></span>' +
-        '<span class="col-val"></span>' +
-        '<span class="col-type"></span>';
+      const r = this.makeRow();
       this.el.appendChild(r);
       this.pool.push(r);
     }
@@ -349,14 +368,25 @@ class VirtualTable {
     });
   }
 
+  makeRow() {
+    const r = document.createElement("div");
+    r.className = "vt-row";
+    if (this.onRowClick) {
+      r.classList.add("clickable");
+      r.addEventListener("click", () => {
+        if (this.onRowClick && r._item) this.onRowClick(r._item);
+      });
+    }
+    r.innerHTML =
+      '<span class="col-addr"></span>' +
+      '<span class="col-val"></span>' +
+      '<span class="col-type"></span>';
+    return r;
+  }
+
   ensurePool() {
     while (this.pool.length < this.visible) {
-      const r = document.createElement("div");
-      r.className = "vt-row";
-      r.innerHTML =
-        '<span class="col-addr"></span>' +
-        '<span class="col-val"></span>' +
-        '<span class="col-type"></span>';
+      const r = this.makeRow();
       this.el.appendChild(r);
       this.pool.push(r);
     }
@@ -451,12 +481,23 @@ class VirtualTable {
       if (cache && cache.rows.length) {
         const item = cache.rows[gi - cache.offset];
         if (item) {
-          cells[0].textContent = item.address;
-          cells[1].textContent = item.value !== undefined ? item.value : "";
-          cells[2].textContent = item.type || "";
+          row._item = item;
+          const [a, v, t] = this.renderRow(item);
+          if (this.htmlCells) {
+            cells[0].innerHTML = a !== undefined ? a : "";
+            cells[1].innerHTML = v !== undefined ? v : "";
+            cells[2].innerHTML = t !== undefined ? t : "";
+          } else {
+            cells[0].textContent = a !== undefined ? a : "";
+            cells[1].textContent = v !== undefined ? v : "";
+            cells[2].textContent = t !== undefined ? t : "";
+          }
         }
       } else {
+        row._item = null;
+        cells[0].textContent = "";
         cells[1].textContent = "...";
+        cells[2].textContent = "";
       }
     }
   }
@@ -465,7 +506,7 @@ class VirtualTable {
     if (this.pending.has(p) || this.pages.has(p)) return;
     const offset = p * this.pageSize;
     const gen = this.gen;
-    const pr = apiGet("/api/results?offset=" + offset + "&limit=" + this.pageSize)
+    const pr = apiGet(this.endpoint + "?offset=" + offset + "&limit=" + this.pageSize)
       .then((d) => {
         if (gen !== this.gen) return; // respuesta obsoleta
         this.pages.set(p, { offset, rows: d.rows || [], done: true });
@@ -767,9 +808,271 @@ async function tblLoad() {
   }
 }
 
+/* ============================ PATTERN / STRINGS / BYTES ================= */
+
+// Render de una fila dinamica: la API devuelve address/type/length (sin
+// contenido); el contenido se lee bajo demanda con /api/memory al seleccionar.
+function dynRender(item) {
+  return [item.address, item.length !== undefined ? "len " + item.length : "",
+          item.type || ""];
+}
+
+async function patScan() {
+  if (state.jobId) { footer("Ya hay un scan en curso", true); return; }
+  const mode = $("pat-mode").value;
+  let path, body, onComplete;
+  if (mode === "aob") {
+    const pat = $("pat-pattern").value.trim();
+    if (!pat) { footer("Introduce un patron (p. ej. 48 8B ?? ??)", true); return; }
+    path = "/api/pattern";
+    body = { pattern: pat };
+    onComplete = () => {
+      patVt.endpoint = "/api/pattern/results";
+      patVt.renderRow = (item) => [item.address, pat, ""];
+      $("pat-col-val").textContent = "Match";
+      $("pat-col-type").textContent = "";
+      patVt.reload();
+    };
+  } else {
+    const text = $("pat-text").value;
+    if (!text) { footer("Introduce un texto para el String Scan", true); return; }
+    path = "/api/scan/first";
+    body = { type: "string", value: text };
+    onComplete = () => {
+      patVt.endpoint = "/api/results";
+      patVt.renderRow = dynRender;
+      $("pat-col-val").textContent = "Length";
+      $("pat-col-type").textContent = "Type";
+      patVt.reload();
+    };
+  }
+  await launchScan(path, body, onComplete);
+}
+
+async function patNext() {
+  if (state.jobId) { footer("Ya hay un scan en curso", true); return; }
+  const mode = $("pat-mode").value;
+  const filter = $("pat-filter").value;
+  const body = { filter };
+  if (filter === "exact") {
+    // El backend hereda el tipo dinamico del scan previo (parse_type no
+    // acepta "string"/"bytes"); solo enviamos el valor exacto.
+    const v = mode === "string" ? $("pat-text").value : $("pat-pattern").value.trim();
+    if (!v) { footer("Introduce el valor exacto", true); return; }
+    body.value = v;
+  }
+  const onComplete = () => {
+    patVt.endpoint = "/api/results";
+    patVt.renderRow = dynRender;
+    $("pat-col-val").textContent = "Length";
+    $("pat-col-type").textContent = "Type";
+    patVt.reload();
+  };
+  await launchScan("/api/scan/next", body, onComplete);
+}
+
+function switchPatMode() {
+  const mode = $("pat-mode").value;
+  $("pat-pattern-label").classList.toggle("hidden", mode !== "aob");
+  $("pat-text-label").classList.toggle("hidden", mode !== "string");
+}
+
+/* ============================ POINTERS ================================= */
+
+// Estado del ultimo scan de pointers (para repetirlo facilmente).
+const ptrState = { opts: null, tableIndex: null, resolved: null };
+
+// Nombre corto de un modulo (basename) para celdas legibles.
+function moduleBase(p) {
+  const s = String(p);
+  const i = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+// Render de una fila de pointer results (HTML escapado).
+function ptrRender(item) {
+  const kind = item.kind === "MODULE" ? "MODULE" : "ABSOLUTE";
+  const pers = item.persistent ? "persistente" : "no persistente";
+  const badgeKind =
+    '<span class="badge ' + (kind === "MODULE" ? "b-module" : "b-absolute") +
+    '">' + kind + "</span>";
+  const badgePers =
+    '<span class="badge ' + (item.persistent ? "b-pers" : "b-nopers") +
+    '">' + pers + "</span>";
+  // Root legible: MODULE -> base+offset ; ABSOLUTE -> direccion.
+  let root;
+  if (kind === "MODULE")
+    root = esc(moduleBase(item.module || "")) +
+           '<span class="muted">+' + esc(item.root_offset || "0x0") + "</span>";
+  else
+    root = '<span class="addr">' + esc(item.root_offset || item.nodes[0] || "") + "</span>";
+  // Cadena: root -> +off0 -> +off1 ... -> TARGET (nodes.back()).
+  let chain = root;
+  const offs = item.offsets || [];
+  for (const o of offs)
+    chain += ' <span class="chain-arrow">→</span> <span class="muted">+' + esc(o) + "</span>";
+  const nodes = item.nodes || [];
+  if (nodes.length)
+    chain += ' <span class="chain-arrow">→</span> <span class="addr">' + esc(nodes[nodes.length - 1]) + "</span>";
+  return [String(item.index),
+          "d" + item.depth + " " + badgeKind + " " + badgePers,
+          '<span class="mono">' + chain + "</span>"];
+}
+
+async function ptrScan() {
+  if (state.jobId) { footer("Ya hay un scan en curso", true); return; }
+  const target = $("ptr-target").value.trim();
+  if (!target) { footer("Introduce la direccion target", true); return; }
+  const opts = {
+    target,
+    depth: parseInt($("ptr-depth").value || "3", 10),
+    max_offset: $("ptr-maxoff").value.trim() || "0x100",
+    offset_step: parseInt($("ptr-step").value || "8", 10),
+    module_only: $("ptr-module").checked,
+    code: $("ptr-code").checked,
+    type: $("ptr-vtype").value,
+  };
+  ptrState.opts = opts;
+  ptrState.tableIndex = null;
+  ptrState.resolved = null;
+  $("ptr-detail").classList.add("hidden");
+  try {
+    const d = await apiPost("/api/pointer/scan", opts);
+    if (d.job_id) {
+      startPolling(d.job_id, () => {
+        ptrVt.endpoint = "/api/pointer/results";
+        ptrVt.renderRow = ptrRender;
+        ptrVt.reload();
+      });
+    } else {
+      footer("Pointer scan: sin job_id", true);
+    }
+  } catch (e) {
+    footer((e.code === "busy" ? "Servidor ocupado: " : "Pointer scan: ") +
+           e.message, true);
+  }
+}
+
+// Detalle de la cadena seleccionada.
+function ptrSelect(item) {
+  ptrState.tableIndex = null;
+  ptrState.resolved = null;
+  const el = $("ptr-detail");
+  el.classList.remove("hidden");
+  const kind = item.kind === "MODULE" ? "MODULE" : "ABSOLUTE";
+  const pers = item.persistent ? "persistente" : "no persistente";
+  const nodes = item.nodes || [];
+  const offs = item.offsets || [];
+  let rootInfo;
+  if (kind === "MODULE")
+    rootInfo = "modulo <b>" + esc(item.module || "") +
+               "</b> +<b>" + esc(item.root_offset || "0x0") + "</b>";
+  else
+    rootInfo = "raiz <b>" + esc(item.root_offset || nodes[0] || "") + "</b>";
+  let html =
+    '<div class="sel-line">' +
+    "<span class=\"badge " + (kind === "MODULE" ? "b-module" : "b-absolute") +
+    '">' + kind + "</span> " + pers +
+    " &nbsp;depth <b>" + item.depth + "</b>" +
+    " &nbsp;type <b>" + esc(item.value_type || "") + "</b></div>" +
+    '<div class="sel-line">' + rootInfo + "</div>" +
+    '<div class="sel-line mono">' +
+    'offsets: ' + (offs.length
+                   ? offs.map((o) => "+" + esc(o)).join(" → ")
+                   : "(ninguno)") +
+    "</div>" +
+    (nodes.length
+     ? '<div class="sel-line mono">target: <span class="addr">' +
+       esc(nodes[nodes.length - 1]) + "</span></div>"
+     : "");
+  if (ptrState.resolved)
+    html += '<div class="sel-line">resuelto: <span class="addr">' +
+            esc(ptrState.resolved.address) + "</span> = <b>" +
+            esc(ptrState.resolved.value) + "</b> (" +
+            esc(ptrState.resolved.type) + ")</div>";
+  html += ' <button class="btn small primary" id="ptr-add-btn">Add to Address Table</button>';
+  html += ' <button class="btn small" id="ptr-resolve-btn">Resolve</button>';
+  html += ' <button class="btn small" id="ptr-mem-btn">Open in Memory</button>';
+  el.innerHTML = html;
+  $("ptr-add-btn").addEventListener("click", () => ptrAdd(item));
+  $("ptr-resolve-btn").addEventListener("click", () => ptrResolve(item));
+  $("ptr-mem-btn").addEventListener("click", () => {
+    const a = ptrState.resolved && ptrState.resolved.address;
+    if (a) { openInMemoryViewer(a); return; }
+    footer("Primero resuelve la cadena", true);
+  });
+}
+
+async function ptrAdd(item) {
+  const desc = "pointer";
+  try {
+    const d = await apiPost("/api/pointer/add",
+                            { chain_index: item.index, description: desc });
+    ptrState.tableIndex = d.table_index;
+    footer("Cadena " + item.index + " añadida a la tabla (id " + d.table_index + ").");
+    // Refresca la tabla y el detalle (resolver por indice de tabla).
+    await tblRefresh();
+    ptrSelect(item);
+  } catch (e) {
+    footer("Pointer add: " + e.message, true);
+  }
+}
+
+async function ptrResolve(item) {
+  let idx = ptrState.tableIndex;
+  if (idx === null) {
+    footer("Primero anade la cadena a la Address Table", true);
+    return;
+  }
+  try {
+    const d = await apiPost("/api/pointer/resolve", { index: idx });
+    ptrState.resolved = d;
+    footer("Resuelto: " + d.address + " = " + d.value + " (" + d.type + ")");
+    ptrSelect(item);
+  } catch (e) {
+    footer("Pointer resolve: " + e.message, true);
+  }
+}
+
+/* ============================ SELECCION DE FILA ========================= */
+
+// Muestra el detalle de una fila seleccionada y ofrece abrirla en el viewer.
+function showRowDetail(item, boxId, isDynamic) {
+  const el = $(boxId);
+  el.classList.remove("hidden");
+  let html = '<span class="addr">' + esc(item.address) + "</span>";
+  if (item.type) html += " <span class=\"muted\">" + esc(item.type) + "</span>";
+  if (isDynamic && item.length !== undefined)
+    html += " <span class=\"muted\">len " + item.length + "</span>";
+  if (item.value !== undefined && item.value !== "")
+    html += " = <b>" + esc(item.value) + "</b>";
+  html += ' <button class="btn small" id="' + boxId + '-open">Open in Memory Viewer</button>';
+  el.innerHTML = html;
+  const btn = el.querySelector("#" + boxId + "-open");
+  if (btn) btn.addEventListener("click", () => openInMemoryViewer(item.address));
+}
+
+function openInMemoryViewer(addr) {
+  switchTab("memory");
+  $("mem-addr").value = addr;
+  memRead();
+}
+
 /* ============================ INIT ======================================= */
 
-const vt = new VirtualTable("vt", { rowHeight: 24, pageSize: 80, overscan: 8 });
+const vt = new VirtualTable("vt", {
+  rowHeight: 24, pageSize: 80, overscan: 8,
+  onRowClick: (item) => showRowDetail(item, "scan-detail", false),
+});
+const patVt = new VirtualTable("vt-pattern", {
+  rowHeight: 24, pageSize: 80, overscan: 8, endpoint: "/api/pattern/results",
+  onRowClick: (item) => showRowDetail(item, "pat-detail", true),
+});
+const ptrVt = new VirtualTable("vt-pointer", {
+  rowHeight: 28, pageSize: 50, overscan: 6, endpoint: "/api/pointer/results",
+  htmlCells: true,
+  onRowClick: (item) => ptrSelect(item),
+});
 
 document.addEventListener("DOMContentLoaded", () => {
   $("btn-refresh").addEventListener("click", loadProcesses);
@@ -778,6 +1081,23 @@ document.addEventListener("DOMContentLoaded", () => {
   $("btn-unknown").addEventListener("click", () => firstScan(true));
   $("btn-next").addEventListener("click", nextScan);
   $("btn-cancel").addEventListener("click", cancelJob);
+
+  // Pointers.
+  $("btn-ptr-scan").addEventListener("click", ptrScan);
+  $("ptr-target").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") ptrScan();
+  });
+
+  // Pattern / Strings / Bytes.
+  $("btn-pat-scan").addEventListener("click", patScan);
+  $("btn-pat-next").addEventListener("click", patNext);
+  $("pat-mode").addEventListener("change", switchPatMode);
+  $("pat-pattern").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") patScan();
+  });
+  $("pat-text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") patScan();
+  });
 
   // Pestañas.
   document.querySelectorAll(".tab").forEach((t) =>

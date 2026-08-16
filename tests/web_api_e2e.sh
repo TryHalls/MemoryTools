@@ -68,10 +68,10 @@ H=(-H "X-MemoryTool-Token: $TOKEN")
 api() {
     local raw
     if [ $# -ge 3 ]; then
-        raw=$(curl -s -w '\n%{http_code}' -X "$1" "${H[@]}" \
+        raw=$(curl -s --max-time 15 -w '\n%{http_code}' -X "$1" "${H[@]}" \
             -H 'Content-Type: application/json' --data "$3" "$URL$2")
     else
-        raw=$(curl -s -w '\n%{http_code}' -X "$1" "${H[@]}" "$URL$2")
+        raw=$(curl -s --max-time 15 -w '\n%{http_code}' -X "$1" "${H[@]}" "$URL$2")
     fi
     J=$(printf '%s' "$raw" | sed '$d')
     code=$(printf '%s' "$raw" | tail -1)
@@ -345,7 +345,7 @@ api POST /api/attach '{"pid":"999999999999999999999999"}'
 check "pid gigante 400" test "$code" = "400"
 api POST /api/pointer/scan '{"target":"0x1000","max_offset":"0x10000","offset_step":1}'
 check "offsets peligrosos 400" test "$code" = "400"
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-MemoryTool-Token: malo" "$URL/api/status")
+code=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -H "X-MemoryTool-Token: malo" "$URL/api/status")
 check "token malo 401" test "$code" = "401"
 
 # --- terminacion limpia ------------------------------------------------------

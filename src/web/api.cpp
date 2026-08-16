@@ -519,11 +519,18 @@ ApiResponse Api::h_scan_next(const HttpRequest& req) {
             if (!val || !val->is_string())
                 return err(400, "scan_invalid",
                            "value requerido para exact");
-            DataType dt = app_.session().scan_type(); // hereda el dinamico
+            // Hereda el tipo del scan dinamico previo (dyn_spec_), igual que
+            // el camino numerico hereda sc.first_type(). El type del body es
+            // opcional: acepta los tokens dinamicos de la CLI (string/bytes/
+            // pattern/aob) o un tipo numerico no dinamico -> rechazado.
+            DataType dt = sc.dyn_spec().type;
             const json::JsonValue* typ = b.get("type");
             if (typ && typ->is_string()) {
-                if (!parse_type(*typ->as_string(), dt) ||
-                    !type_is_dynamic(dt))
+                const std::string ts = *typ->as_string();
+                const DataType tok = dynamic_type_token(ts);
+                if (type_is_dynamic(tok))
+                    dt = tok;
+                else if (!parse_type(ts, dt) || !type_is_dynamic(dt))
                     return err(400, "scan_invalid",
                                "tipo invalido para escaneo dinamico");
             }
@@ -1103,9 +1110,17 @@ ApiResponse Api::h_pointer_results(uint64_t offset, uint64_t limit) {
     for (size_t i = begin; i < end; ++i) {
         const PointerChain& c = res.chains[i];
         bool persistent = false;
+        std::string module;
+        std::string root_offset;
         if (!c.nodes.empty()) {
             const PointerBase pb = make_base_from_address(regions, c.nodes[0]);
             persistent = pb.kind == PointerBaseKind::MODULE;
+            if (persistent) {
+                module = pb.module;
+                root_offset = hex_addr(pb.offset);
+            } else {
+                root_offset = hex_addr(pb.address);
+            }
         }
         json::JsonValue::Array nodes;
         for (uint64_t n : c.nodes)
@@ -1121,6 +1136,8 @@ ApiResponse Api::h_pointer_results(uint64_t offset, uint64_t limit) {
             {"kind", json::JsonValue::make_string(persistent ? "MODULE"
                                                              : "ABSOLUTE")},
             {"persistent", json::JsonValue::make_bool(persistent)},
+            {"module", json::JsonValue::make_string(module)},
+            {"root_offset", json::JsonValue::make_string(root_offset)},
             {"value_type",
              json::JsonValue::make_string(type_name(res.value_type))},
         }));

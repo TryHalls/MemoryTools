@@ -72,10 +72,10 @@ check "styles.css contiene tabla" grep -q "table\.tbl" <<<"$css"
 api() {
     local raw
     if [ $# -ge 3 ]; then
-        raw=$(curl -s -w '\n%{http_code}' -X "$1" "${H[@]}" \
+        raw=$(curl -s --max-time 15 -w '\n%{http_code}' -X "$1" "${H[@]}" \
             -H 'Content-Type: application/json' --data "$3" "$URL$2")
     else
-        raw=$(curl -s -w '\n%{http_code}' -X "$1" "${H[@]}" "$URL$2")
+        raw=$(curl -s --max-time 15 -w '\n%{http_code}' -X "$1" "${H[@]}" "$URL$2")
     fi
     J=$(printf '%s' "$raw" | sed '$d')
     code=$(printf '%s' "$raw" | tail -1)
