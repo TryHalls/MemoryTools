@@ -478,6 +478,295 @@ class VirtualTable {
   }
 }
 
+/* ============================ PESTAÑAS ================================== */
+
+function switchTab(name) {
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".tabpanel").forEach((p) =>
+    p.classList.toggle("active", p.id === "panel-" + name));
+  if (name === "table") tblRefresh();
+}
+
+/* ============================ MEMORY VIEWER ============================= */
+
+const memState = { addr: 0, len: 256 };
+
+function hexAddr(n) { return "0x" + n.toString(16); }
+
+async function memRead() {
+  const s = $("mem-addr").value.trim();
+  if (!s) { footer("Introduce una direccion", true); return; }
+  let addr;
+  try { addr = BigInt(s); } catch (e) {
+    footer("Direccion invalida: " + s, true); return;
+  }
+  const len = parseInt($("mem-len").value || "256", 10);
+  if (!(len >= 1 && len <= 4096)) { footer("Length debe estar entre 1 y 4096", true); return; }
+  memState.addr = addr;
+  memState.len = len;
+  await memFetch();
+}
+
+async function memFetch() {
+  const addr = memState.addr.toString();
+  try {
+    const d = await apiGet(
+      "/api/memory?address=" + addr + "&length=" + memState.len);
+    renderMem(d);
+    $("mem-addr").value = hexAddr(memState.addr);
+  } catch (e) {
+    footer("Memory: " + e.message, true);
+  }
+}
+
+function renderMem(d) {
+  const reg = $("mem-region");
+  if (d.region && d.region.start) {
+    reg.innerHTML =
+      "Region: <span class=\"addr\">" + esc(d.region.start) +
+      "</span> - <span class=\"addr\">" + esc(d.region.end) +
+      "</span> <span class=\"perms\">[" + esc(d.region.perms) +
+      "]</span> <span class=\"path\">" + esc(d.region.path || "") +
+      "</span>";
+  } else {
+    reg.textContent = "Sin region conocida para " + (d.address || "");
+  }
+
+  // Hex legible: filas de 16 bytes (address | bytes | ascii).
+  const hex = d.hex || "";
+  const ascii = d.ascii || "";
+  const base = memState.addr;
+  let out = "";
+  for (let i = 0; i < hex.length; i += 32) {
+    const chunkHex = hex.substr(i, 32);
+    const chunkAsc = ascii.substr(i / 2, 16);
+    let spaced = "";
+    for (let j = 0; j < chunkHex.length; j += 2)
+      spaced += chunkHex.substr(j, 2) + " ";
+    const rowAddr = hexAddr(base + BigInt(i / 2));
+    out += "<div><span class=\"addr\">" + rowAddr +
+           "</span>  <span class=\"bytes\">" + spaced.trim() +
+           "</span>  <span class=\"ascii\">|" + esc(chunkAsc) + "|</span></div>";
+  }
+  $("mem-hex").innerHTML = out || "(vacio)";
+  footer("Memory: " + (d.region && d.region.start ? d.region.perms : "sin region"));
+}
+
+async function memPage(delta) {
+  if (!memState.addr) { footer("Primero lee una direccion", true); return; }
+  memState.addr = memState.addr + BigInt(delta * memState.len);
+  await memFetch();
+}
+
+async function memCopyHex() {
+  const txt = $("mem-hex").textContent;
+  if (!txt) { footer("Nada que copiar", true); return; }
+  try {
+    await navigator.clipboard.writeText(txt);
+    footer("Hex copiado.");
+  } catch (e) {
+    footer("No se pudo copiar: " + e.message, true);
+  }
+}
+
+/* ============================ ADDRESS TABLE ============================= */
+
+function tblDetail(html, isErr) {
+  const el = $("tbl-detail");
+  el.classList.remove("hidden");
+  el.innerHTML = isErr
+    ? '<span class="err">' + esc(html) + "</span>"
+    : html;
+}
+
+async function tblRefresh() {
+  try {
+    const d = await apiGet("/api/table");
+    renderTbl(d.entries || []);
+  } catch (e) {
+    footer("Table: " + e.message, true);
+    renderTbl([]);
+  }
+}
+
+function kindLabel(e) {
+  if (!e.pointer) return "absolute";
+  const p = e.pointer;
+  const pers = p.persistent ? "persistente" : "no persistente";
+  return "pointer[" + (p.kind || "ABSOLUTE") + "] " + pers;
+}
+
+function addrLabel(e) {
+  if (!e.pointer) return esc(e.address);
+  const p = e.pointer;
+  if (p.module) {
+    return esc(p.module) + " +" + esc(p.root_offset || "0x0") +
+      (p.offsets && p.offsets.length ? " [" + p.offsets.map((o) => "+" + o).join(" ") + "]" : "");
+  }
+  return "anon +" + esc(p.root_offset || "0x0");
+}
+
+function renderTbl(entries) {
+  const body = $("tbl-body");
+  body.innerHTML = "";
+  if (!entries.length) {
+    body.innerHTML = '<tr><td colspan="8" class="ellip">(vacía)</td></tr>';
+    return;
+  }
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    const kind = kindLabel(e);
+    const isPtr = !!e.pointer;
+    tr.innerHTML =
+      "<td>" + e.index + "</td>" +
+      "<td class=\"addr ellip\" title=\"" + addrLabel(e) + "\">" + addrLabel(e) + "</td>" +
+      "<td>" + esc(e.type) + "</td>" +
+      "<td class=\"ellip\" title=\"" + esc(e.description) + "\">" + esc(e.description) + "</td>" +
+      "<td class=\"enabled-" + (e.enabled ? "y" : "n") + "\">" + (e.enabled ? "si" : "no") + "</td>" +
+      "<td class=\"stale-" + (e.stale ? "y" : "n") + "\">" + (e.stale ? "si" : "no") + "</td>" +
+      "<td class=\"kind-" + (isPtr ? "module" : "absolute") + "\">" + esc(kind) + "</td>" +
+      "<td class=\"actions\"></td>";
+    const act = tr.querySelector(".actions");
+    act.appendChild(btn("Read", () => tblRead(e)));
+    act.appendChild(btn("Set", () => tblSetRow(tr, e)));
+    act.appendChild(btn("Toggle", () => tblToggle(e)));
+    if (isPtr) act.appendChild(btn("Resolve", () => tblResolve(e)));
+    act.appendChild(btn("Remove", () => tblRemove(e)));
+    body.appendChild(tr);
+  }
+}
+
+function btn(label, fn) {
+  const b = document.createElement("button");
+  b.className = "btn small";
+  b.textContent = label;
+  b.addEventListener("click", fn);
+  return b;
+}
+
+async function tblAdd() {
+  const addr = $("tbl-addr").value.trim();
+  const type = $("tbl-type").value;
+  const desc = $("tbl-desc").value.trim();
+  if (!addr) { footer("Introduce una direccion para la tabla", true); return; }
+  try {
+    const d = await apiPost("/api/table/add",
+                            { address: addr, type, description: desc });
+    footer("Entrada " + d.index + " añadida.");
+    $("tbl-addr").value = "";
+    $("tbl-desc").value = "";
+    await tblRefresh();
+  } catch (e) {
+    footer("Table add: " + e.message, true);
+  }
+}
+
+async function tblRead(e) {
+  try {
+    const d = await apiPost("/api/table/read", { index: e.index });
+    tblDetail(
+      "[" + d.index + "] " + d.address + " " + d.type +
+      " = <b>" + esc(d.value || "?") + "</b>" +
+      (d.stale ? " <span class=\"err\">(stale)</span>" : ""));
+  } catch (err) {
+    tblDetail(err.message, true);
+  }
+}
+
+function tblSetRow(tr, e) {
+  const act = tr.querySelector(".actions");
+  act.innerHTML = "";
+  act.classList.add("set-row");
+  const input = document.createElement("input");
+  input.placeholder = "valor " + e.type;
+  const ok = btn("OK", async () => {
+    const v = input.value.trim();
+    if (!v) { footer("Valor vacio", true); return; }
+    try {
+      const d = await apiPost("/api/table/set", { index: e.index, value: v });
+      tblDetail("[" + d.index + "] " + d.address +
+                " <span class=\"old\">" + esc(d.old_value || "?") +
+                "</span> -> <span class=\"new\">" + esc(d.new_value || "?") +
+                "</span> " + (d.verified ? "(verificado)" : "(NO verificado)"));
+      await tblRefresh();
+    } catch (err) {
+      tblDetail(err.message, true);
+      await tblRefresh();
+    }
+  });
+  const cancel = btn("X", tblRefresh);
+  act.appendChild(input);
+  act.appendChild(ok);
+  act.appendChild(cancel);
+  input.focus();
+}
+
+async function tblToggle(e) {
+  try {
+    const d = await apiPost("/api/table/toggle", { index: e.index });
+    footer("Entrada " + d.index + " -> " + (d.enabled ? "ON" : "OFF"));
+    await tblRefresh();
+  } catch (err) {
+    footer("Table toggle: " + err.message, true);
+  }
+}
+
+async function tblRemove(e) {
+  try {
+    await apiPost("/api/table/remove", { index: e.index });
+    footer("Entrada " + e.index + " eliminada.");
+    await tblRefresh();
+  } catch (err) {
+    footer("Table remove: " + err.message, true);
+  }
+}
+
+async function tblResolve(e) {
+  try {
+    const d = await apiPost("/api/pointer/resolve", { index: e.index });
+    tblDetail("[" + d.index + "] pointer -> " + d.address +
+              " = <b>" + esc(d.value) + "</b> (" + d.type + ")");
+  } catch (err) {
+    tblDetail("Resolve: " + err.message, true);
+  }
+}
+
+function validFileName(n) {
+  // Nombres simples: sin separadores de ruta ni subidas de directorio.
+  return /^[A-Za-z0-9._-]+$/.test(n) &&
+         !n.startsWith(".") && !n.includes("..");
+}
+
+async function tblSave() {
+  const name = $("tbl-file").value.trim();
+  if (!validFileName(name)) {
+    footer("Nombre de archivo invalido (usa solo letras/numeros/._-)", true);
+    return;
+  }
+  try {
+    const d = await apiPost("/api/table/save", { name });
+    footer("Guardada en " + d.path);
+  } catch (e) {
+    footer("Table save: " + e.message, true);
+  }
+}
+
+async function tblLoad() {
+  const name = $("tbl-file").value.trim();
+  if (!validFileName(name)) {
+    footer("Nombre de archivo invalido (usa solo letras/numeros/._-)", true);
+    return;
+  }
+  try {
+    const d = await apiPost("/api/table/load", { name });
+    footer("Cargadas " + d.count + " entradas de " + d.path);
+    await tblRefresh();
+  } catch (e) {
+    footer("Table load: " + e.message, true);
+  }
+}
+
 /* ============================ INIT ======================================= */
 
 const vt = new VirtualTable("vt", { rowHeight: 24, pageSize: 80, overscan: 8 });
@@ -489,6 +778,29 @@ document.addEventListener("DOMContentLoaded", () => {
   $("btn-unknown").addEventListener("click", () => firstScan(true));
   $("btn-next").addEventListener("click", nextScan);
   $("btn-cancel").addEventListener("click", cancelJob);
+
+  // Pestañas.
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.addEventListener("click", () => switchTab(t.dataset.tab)));
+
+  // Memory Viewer.
+  $("btn-mem-read").addEventListener("click", memRead);
+  $("btn-mem-prev").addEventListener("click", () => memPage(-1));
+  $("btn-mem-next").addEventListener("click", () => memPage(1));
+  $("btn-mem-refresh").addEventListener("click", memFetch);
+  $("btn-mem-copy").addEventListener("click", memCopyHex);
+  $("mem-addr").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") memRead();
+  });
+
+  // Address Table.
+  $("btn-tbl-add").addEventListener("click", tblAdd);
+  $("btn-tbl-refresh").addEventListener("click", tblRefresh);
+  $("btn-tbl-save").addEventListener("click", tblSave);
+  $("btn-tbl-load").addEventListener("click", tblLoad);
+  $("tbl-addr").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") tblAdd();
+  });
 
   // Click en proceso -> attach directo.
   $("proc-list").addEventListener("click", (e) => {

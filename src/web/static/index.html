@@ -34,9 +34,14 @@
   </aside>
 
   <main id="main">
-    <div class="tab-bar"><span class="tab active">Scan</span></div>
+    <div class="tab-bar">
+      <button class="tab active" data-tab="scan">Scan</button>
+      <button class="tab" data-tab="memory">Memory</button>
+      <button class="tab" data-tab="table">Address Table</button>
+    </div>
 
-    <section id="scan-panel">
+    <!-- ============ PESTAÑA SCAN ============ -->
+    <section id="panel-scan" class="tabpanel active">
       <div class="scan-controls">
         <label>Type
           <select id="scan-type">
@@ -85,6 +90,73 @@
         <span class="col-type">Type</span>
       </div>
       <div id="vt" class="vt"></div>
+    </section>
+
+    <!-- ============ PESTAÑA MEMORY ============ -->
+    <section id="panel-memory" class="tabpanel">
+      <div class="scan-controls">
+        <label>Address
+          <input id="mem-addr" type="text" placeholder="0x...">
+        </label>
+        <label>Length
+          <input id="mem-len" type="text" value="256">
+        </label>
+        <button id="btn-mem-read" class="btn primary">Read</button>
+        <button id="btn-mem-prev" class="btn" title="Página anterior">Prev</button>
+        <button id="btn-mem-next" class="btn" title="Página siguiente">Next</button>
+        <button id="btn-mem-refresh" class="btn">Refresh</button>
+        <button id="btn-mem-copy" class="btn">Copy Hex</button>
+      </div>
+      <div id="mem-region" class="mem-region"></div>
+      <div id="mem-hex" class="mem-hex mono"></div>
+    </section>
+
+    <!-- ============ PESTAÑA ADDRESS TABLE ============ -->
+    <section id="panel-table" class="tabpanel">
+      <div class="scan-controls">
+        <label>Address
+          <input id="tbl-addr" type="text" placeholder="0x...">
+        </label>
+        <label>Type
+          <select id="tbl-type">
+            <option value="int32" selected>int32</option>
+            <option value="int8">int8</option>
+            <option value="int16">int16</option>
+            <option value="int64">int64</option>
+            <option value="uint8">uint8</option>
+            <option value="uint16">uint16</option>
+            <option value="uint32">uint32</option>
+            <option value="uint64">uint64</option>
+            <option value="float">float</option>
+            <option value="double">double</option>
+          </select>
+        </label>
+        <label>Description
+          <input id="tbl-desc" type="text" placeholder="dinero">
+        </label>
+        <button id="btn-tbl-add" class="btn primary">Add</button>
+        <button id="btn-tbl-refresh" class="btn">Refresh</button>
+      </div>
+      <div class="scan-controls">
+        <label>File
+          <input id="tbl-file" type="text" placeholder="tabla1" value="tabla1">
+        </label>
+        <button id="btn-tbl-save" class="btn">Save</button>
+        <button id="btn-tbl-load" class="btn">Load</button>
+      </div>
+      <div id="tbl-detail" class="tbl-detail hidden"></div>
+      <div class="tbl-wrap">
+        <table id="tbl-table" class="tbl">
+          <thead>
+            <tr>
+              <th>ID</th><th>Address / Module</th><th>Type</th>
+              <th>Description</th><th>On</th><th>Stale</th><th>Kind</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tbl-body"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 </div>

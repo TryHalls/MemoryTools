@@ -25,9 +25,9 @@ SRV=$!
 URL=""
 TOKEN=""
 for _ in $(seq 1 100); do
-    URL=$(grep -m1 '^URL:' "$LOG" | awk '{print $2}')
-    TOKEN=$(grep -m1 '^Token:' "$LOG" | awk '{print $2}')
-    [ -n "$URL" ] && [ -n "$TOKEN" ] && break
+    URL=$(grep -m1 '^URL:' "$LOG" | awk '{print $2}' || true)
+    TOKEN=$(grep -m1 '^Token:' "$LOG" | awk '{print $2}' || true)
+    if [ -n "$URL" ] && [ -n "$TOKEN" ]; then break; fi
     sleep 0.1
 done
 if [ -z "$URL" ] || [ -z "$TOKEN" ]; then
