@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MemoryTool</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<!-- El servidor sustituye __MEMORYTOOL_TOKEN__ por el token real de la
+     ejecucion al servir esta pagina. El token NUNCA aparece en URLs ni se
+     pide por query string. -->
+<script>window.MEMORYTOOL_TOKEN = "__MEMORYTOOL_TOKEN__";</script>
+
+<header id="app-header">
+  <div class="brand">MemoryTool</div>
+  <div class="status-box">
+    <span id="conn-dot" class="dot off"></span>
+    <span id="conn-label">Desconectado</span>
+    <span id="pid-label" class="pid">PID: --</span>
+  </div>
+  <div class="actions">
+    <button id="btn-detach" class="btn" disabled>Detach</button>
+  </div>
+</header>
+
+<div id="app-body">
+  <aside id="sidebar">
+    <div class="side-title">
+      <span>Procesos</span>
+      <button id="btn-refresh" class="btn small">Refresh</button>
+    </div>
+    <div id="proc-list" class="proc-list"></div>
+  </aside>
+
+  <main id="main">
+    <div class="tab-bar"><span class="tab active">Scan</span></div>
+
+    <section id="scan-panel">
+      <div class="scan-controls">
+        <label>Type
+          <select id="scan-type">
+            <option value="int8">int8</option>
+            <option value="int16">int16</option>
+            <option value="int32" selected>int32</option>
+            <option value="int64">int64</option>
+            <option value="uint8">uint8</option>
+            <option value="uint16">uint16</option>
+            <option value="uint32">uint32</option>
+            <option value="uint64">uint64</option>
+            <option value="float">float</option>
+            <option value="double">double</option>
+            <!-- string / bytes / pointer se anadiran en fases posteriores
+                 sin rehacer la ventana: basta con anadir la opcion aqui y
+                 ajustar el body de first/next. -->
+          </select>
+        </label>
+        <label>Filter
+          <select id="scan-filter">
+            <option value="changed" selected>changed</option>
+            <option value="unchanged">unchanged</option>
+            <option value="exact">exact</option>
+            <option value="increased">increased</option>
+            <option value="decreased">decreased</option>
+          </select>
+        </label>
+        <label>Value
+          <input id="scan-value" type="text" placeholder="12345">
+        </label>
+        <button id="btn-first" class="btn primary">FIRST</button>
+        <button id="btn-next" class="btn">NEXT</button>
+        <button id="btn-unknown" class="btn">UNKNOWN</button>
+      </div>
+
+      <div id="job-box" class="job-box hidden">
+        <span id="job-state" class="job-state">--</span>
+        <div class="job-bar"><div id="job-fill" class="job-fill"></div></div>
+        <span id="job-info" class="job-info"></span>
+        <button id="btn-cancel" class="btn small danger">Cancel</button>
+      </div>
+
+      <div class="results-head">
+        <span class="col-addr">Address</span>
+        <span class="col-val">Value</span>
+        <span class="col-type">Type</span>
+      </div>
+      <div id="vt" class="vt"></div>
+    </section>
+  </main>
+</div>
+
+<footer id="app-footer">
+  <span id="footer-msg">Listo.</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
