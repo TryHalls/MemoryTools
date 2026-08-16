@@ -119,6 +119,12 @@ api POST /api/attach "{\"pid\":\"$PID\"}"
 check "attach 200" test "$code" = "200"
 
 # --- 5-7) pattern scan AOB + polling + results --------------------------------
+# REGRESION W-5E1 (bug critico 1): el pattern scan ocurre SIN scan numerico
+# previo. Con el bug, VirtualTable.loadTotal() consultaba /api/results (que
+# devuelve total 0 porque no hay scan numerico) y la tabla de pattern quedaba
+# vacia aunque /api/pattern/results tuviese hits. El fix usa this.endpoint.
+api GET "/api/results?offset=0&limit=1"
+check "sin scan numerico: total 0" grep -q '"total":"0"' <<<"$J"
 # "hola memorytool" en bytes: 68 6F 6C 61 20 6D 65 6D 6F 72 79 74 6F 6F 6C
 api POST /api/pattern '{"pattern":"68 6F 6C 61 20 6D 65 6D"}'
 check "pattern scan 200" test "$code" = "200"

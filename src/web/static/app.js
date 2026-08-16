@@ -54,6 +54,7 @@ const state = {
   jobTimer: null,
   jobOnComplete: null, // callback al terminar el job (refresh de la tabla correcta)
   cancelInFlight: false,
+  pollInFlight: false, // evita polling concurrente (fetch pendiente)
   selectedPid: null,
   resultsTotal: 0,
   scanDone: false,
@@ -79,6 +80,14 @@ function footer(msg, isErr) {
   el.className = isErr ? "err" : "";
 }
 
+// Mensaje de error con codigo estable del backend cuando esta disponible
+// (p. ej. "no_process", "scan_invalid", "busy"), evitando "HTTP 500" generico.
+function errText(e) {
+  if (!e) return "error";
+  const code = e.code && e.code.indexOf("http_") !== 0 ? e.code : "";
+  return (code ? code + ": " : "") + (e.message || String(e));
+}
+
 function showJobBox(show) {
   $("job-box").classList.toggle("hidden", !show);
 }
@@ -93,11 +102,40 @@ async function refreshStatus() {
     setPid(d.pid && d.pid !== "0" ? d.pid : 0);
     if (d.runner_busy) {
       const j = d.job;
-      if (j && j.id && !state.jobId) startPolling(j.id);
+      if (j && j.id && !state.jobId)
+        // Job recuperado tras recargar la pagina: al completar refresca la
+        // tabla correspondiente segun el kind del job.
+        startPolling(j.id, () => reloadTableForKind(j.kind));
     }
   } catch (e) {
     setConn(false, "Sin servidor");
   }
+}
+
+// Seleccion de la tabla virtual segun el kind de un job (pura/testeable).
+function tableNameForJobKind(kind) {
+  if (kind === "pattern") return "patVt";
+  if (kind === "pointer") return "ptrVt";
+  return "vt";
+}
+
+// Recarga la tabla correspondiente al kind de un job recuperado tras F5.
+function reloadTableForKind(kind) {
+  if (kind === "pattern") {
+    patVt.endpoint = "/api/pattern/results";
+    patVt.renderRow = (item) => [item.address, "match", ""];
+    $("pat-col-val").textContent = "Match";
+    $("pat-col-type").textContent = "";
+    patVt.reload();
+    return;
+  }
+  if (kind === "pointer") {
+    ptrVt.endpoint = "/api/pointer/results";
+    ptrVt.renderRow = ptrRender;
+    ptrVt.reload();
+    return;
+  }
+  vt.reload();
 }
 
 /* ============================ PROCESOS =================================== */
@@ -167,6 +205,31 @@ async function attachSelected() {
   }
 }
 
+// Limpia todas las vistas dependientes del proceso para que tras detach (o
+// cambio de proceso) la UI no muestre datos engañosos del proceso anterior.
+// Conserva configuraciones reutilizables (depth/max_offset/step/type...).
+function clearProcessViews() {
+  // Memory Viewer.
+  $("mem-hex").textContent = "";
+  $("mem-region").textContent = "";
+  memState.addr = 0;
+  // Address Table.
+  $("tbl-body").innerHTML = "";
+  $("tbl-detail").classList.add("hidden");
+  $("tbl-detail").innerHTML = "";
+  // Detalles de seleccion.
+  $("scan-detail").classList.add("hidden");
+  $("scan-detail").innerHTML = "";
+  $("pat-detail").classList.add("hidden");
+  $("pat-detail").innerHTML = "";
+  $("ptr-detail").classList.add("hidden");
+  $("ptr-detail").innerHTML = "";
+  // Estados de seleccion de pointers.
+  ptrState.selectedIndex = null;
+  ptrState.tableIndex = null;
+  ptrState.resolved = null;
+}
+
 async function detach() {
   if (state.jobId) {
     footer("Otro scan esta en curso (cancelalo primero)", true);
@@ -179,6 +242,7 @@ async function detach() {
     vt.clear();
     patVt.clear();
     ptrVt.clear();
+    clearProcessViews();
   } catch (e) {
     footer("Detach fallo: " + e.message, true);
   }
@@ -262,24 +326,34 @@ function setJobState(s, progress, count, elapsed) {
 }
 
 async function pollOnce() {
+  // Evita varios fetch simultaneos si uno tarda mas de 250 ms.
+  if (state.pollInFlight) return;
   const jid = state.jobId;
   if (!jid) return;
-  let d;
+  state.pollInFlight = true;
   try {
-    d = await apiGet("/api/jobs/" + jid);
-  } catch (e) {
-    if (e.status === 404) { finishJob("job " + jid + " ya no existe", null); return; }
-    return; // reintenta en el siguiente tick
-  }
-  const s = d.state || "unknown";
-  const progress = typeof d.progress === "number" ? d.progress : 0;
-  const count = parseInt(d.count || "0", 10);
-  const elapsed = d.elapsed_ms || 0;
-  setJobState(s, progress, count, elapsed);
+    let d;
+    try {
+      d = await apiGet("/api/jobs/" + jid);
+    } catch (e) {
+      if (e.status === 404) {
+        finishJob("job " + jid + " ya no existe", null);
+        return;
+      }
+      return; // reintenta en el siguiente tick
+    }
+    const s = d.state || "unknown";
+    const progress = typeof d.progress === "number" ? d.progress : 0;
+    const count = parseInt(d.count || "0", 10);
+    const elapsed = d.elapsed_ms || 0;
+    setJobState(s, progress, count, elapsed);
 
-  if (s === "completed") finishJob(null, d);
-  else if (s === "cancelled") finishJob("Scan cancelado", d);
-  else if (s === "failed") finishJob(d.error || "Scan fallo", d);
+    if (s === "completed") finishJob(null, d);
+    else if (s === "cancelled") finishJob("Scan cancelado", d);
+    else if (s === "failed") finishJob(d.error || "Scan fallo", d);
+  } finally {
+    state.pollInFlight = false;
+  }
 }
 
 function finishJob(msg, d) {
@@ -414,7 +488,7 @@ class VirtualTable {
 
   async loadTotal() {
     try {
-      const d = await apiGet("/api/results?offset=0&limit=1");
+      const d = await apiGet(this.endpoint + "?offset=0&limit=1");
       this.total = parseInt(d.total || "0", 10);
     } catch (e) {
       this.total = 0;
@@ -557,7 +631,7 @@ async function memFetch() {
     renderMem(d);
     $("mem-addr").value = hexAddr(memState.addr);
   } catch (e) {
-    footer("Memory: " + e.message, true);
+    footer("Memory: " + errText(e), true);
   }
 }
 
@@ -580,11 +654,11 @@ function renderMem(d) {
   const base = memState.addr;
   let out = "";
   for (let i = 0; i < hex.length; i += 32) {
-    const chunkHex = hex.substr(i, 32);
-    const chunkAsc = ascii.substr(i / 2, 16);
+    const chunkHex = hex.slice(i, i + 32);
+    const chunkAsc = ascii.slice(i / 2, i / 2 + 16);
     let spaced = "";
     for (let j = 0; j < chunkHex.length; j += 2)
-      spaced += chunkHex.substr(j, 2) + " ";
+      spaced += chunkHex.slice(j, j + 2) + " ";
     const rowAddr = hexAddr(base + BigInt(i / 2));
     out += "<div><span class=\"addr\">" + rowAddr +
            "</span>  <span class=\"bytes\">" + spaced.trim() +
@@ -880,7 +954,8 @@ function switchPatMode() {
 /* ============================ POINTERS ================================= */
 
 // Estado del ultimo scan de pointers (para repetirlo facilmente).
-const ptrState = { opts: null, tableIndex: null, resolved: null };
+const ptrState = { opts: null, selectedIndex: null, tableIndex: null,
+                    resolved: null };
 
 // Nombre corto de un modulo (basename) para celdas legibles.
 function moduleBase(p) {
@@ -933,6 +1008,7 @@ async function ptrScan() {
     type: $("ptr-vtype").value,
   };
   ptrState.opts = opts;
+  ptrState.selectedIndex = null;
   ptrState.tableIndex = null;
   ptrState.resolved = null;
   $("ptr-detail").classList.add("hidden");
@@ -953,10 +1029,9 @@ async function ptrScan() {
   }
 }
 
-// Detalle de la cadena seleccionada.
-function ptrSelect(item) {
-  ptrState.tableIndex = null;
-  ptrState.resolved = null;
+// Render del detalle de una cadena (sin tocar el estado de resolucion:
+// Add/Resolve conservan tableIndex/resolved entre re-renders).
+function ptrRenderDetail(item) {
   const el = $("ptr-detail");
   el.classList.remove("hidden");
   const kind = item.kind === "MODULE" ? "MODULE" : "ABSOLUTE";
@@ -1010,9 +1085,9 @@ async function ptrAdd(item) {
                             { chain_index: item.index, description: desc });
     ptrState.tableIndex = d.table_index;
     footer("Cadena " + item.index + " añadida a la tabla (id " + d.table_index + ").");
-    // Refresca la tabla y el detalle (resolver por indice de tabla).
+    // Refresca la tabla y re-renderiza el detalle SIN perder tableIndex.
     await tblRefresh();
-    ptrSelect(item);
+    ptrRenderDetail(item);
   } catch (e) {
     footer("Pointer add: " + e.message, true);
   }
@@ -1028,10 +1103,21 @@ async function ptrResolve(item) {
     const d = await apiPost("/api/pointer/resolve", { index: idx });
     ptrState.resolved = d;
     footer("Resuelto: " + d.address + " = " + d.value + " (" + d.type + ")");
-    ptrSelect(item);
+    ptrRenderDetail(item);
   } catch (e) {
     footer("Pointer resolve: " + e.message, true);
   }
+}
+
+// Seleccion de una cadena: solo al CAMBIAR de cadena se resetea el estado de
+// resolucion; la cadena ya anadida conserva tableIndex/resolved.
+function ptrSelect(item) {
+  if (ptrState.selectedIndex !== item.index) {
+    ptrState.selectedIndex = item.index;
+    ptrState.tableIndex = null;
+    ptrState.resolved = null;
+  }
+  ptrRenderDetail(item);
 }
 
 /* ============================ SELECCION DE FILA ========================= */

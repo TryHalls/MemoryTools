@@ -114,6 +114,11 @@ api POST /api/attach "{\"pid\":\"$PP\"}"
 check "attach 200" test "$code" = "200"
 
 # --- 5-6) pointer scan depth=1 + job completa --------------------------------
+# REGRESION W-5E1 (bug critico 1): el pointer scan ocurre SIN scan numerico
+# previo. Con el bug, loadTotal() consultaba /api/results (total 0) y la tabla
+# de pointers quedaba vacia aunque /api/pointer/results tuviese cadenas.
+api GET "/api/results?offset=0&limit=1"
+check "sin scan numerico: total 0" grep -q '"total":"0"' <<<"$J"
 api POST /api/pointer/scan "{\"target\":\"$PTGT\",\"depth\":1}"
 check "pointer scan depth1 200" test "$code" = "200"
 JID=$(printf '%s' "$J" | json_get 'd["job_id"]')

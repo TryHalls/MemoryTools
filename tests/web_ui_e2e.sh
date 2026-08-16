@@ -69,6 +69,53 @@ else
     echo "FAIL: app.js no contiene VirtualTable"; fail=1
 fi
 
+# --- W-5E1: fixes de la auditoria presentes en app.js -------------------------
+# 1) loadTotal usa this.endpoint (no la ruta fija /api/results).
+if grep -q 'apiGet(this.endpoint + "?offset=0&limit=1")' /tmp/ui_app.js; then
+    echo "ok: loadTotal usa this.endpoint (fix critico 1)"
+else
+    echo "FAIL: loadTotal no usa this.endpoint"; fail=1
+fi
+if grep -q 'apiGet("/api/results?offset=0&limit=1")' /tmp/ui_app.js; then
+    echo "FAIL: loadTotal sigue con ruta fija /api/results"; fail=1
+else
+    echo "ok: sin ruta fija en loadTotal"
+fi
+
+# 2) Seleccion de tabla por kind de job (recovery tras F5).
+if grep -q 'function tableNameForJobKind' /tmp/ui_app.js &&
+   grep -q 'return "patVt"' /tmp/ui_app.js &&
+   grep -q 'return "ptrVt"' /tmp/ui_app.js &&
+   grep -q 'return "vt"' /tmp/ui_app.js; then
+    echo "ok: tableNameForJobKind mapea pattern/pointer/scan"
+else
+    echo "FAIL: tableNameForJobKind incompleto"; fail=1
+fi
+
+# 3) pollInFlight evita polling concurrente.
+if grep -q 'state.pollInFlight' /tmp/ui_app.js; then
+    echo "ok: pollInFlight presente"
+else
+    echo "FAIL: pollInFlight ausente"; fail=1
+fi
+
+# 4) detach limpia las vistas del proceso anterior.
+if grep -q 'function clearProcessViews' /tmp/ui_app.js &&
+   grep -q 'clearProcessViews()' /tmp/ui_app.js; then
+    echo "ok: clearProcessViews presente y llamado"
+else
+    echo "FAIL: clearProcessViews ausente/sin llamada"; fail=1
+fi
+
+# 5) ptrAdd/ptrResolve re-renderizan sin perder tableIndex/resolved.
+if grep -q 'function ptrRenderDetail' /tmp/ui_app.js &&
+   grep -q 'ptrRenderDetail(item)' /tmp/ui_app.js &&
+   grep -q 'function ptrSelect' /tmp/ui_app.js; then
+    echo "ok: ptrRenderDetail separa render de seleccion (fix critico 2)"
+else
+    echo "FAIL: ptrRenderDetail ausente"; fail=1
+fi
+
 # --- GET /styles.css ---------------------------------------------------------
 code=$(curl -s -o /tmp/ui_css.css -w "%{http_code}" "http://127.0.0.1:$PORT/styles.css")
 if [ "$code" = "200" ]; then echo "ok: GET /styles.css 200"; else echo "FAIL: GET /styles.css -> $code"; fail=1; fi
