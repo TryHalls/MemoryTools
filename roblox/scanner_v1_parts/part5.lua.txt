@@ -89,6 +89,45 @@ local function exportCategory(name, text)
     copyActiveChunk()
 end
 
+local function saveEvidenceFiles()
+    if type(writefile) ~= "function" or not reportData then
+        return false, "writefile() no disponible"
+    end
+
+    local base = "RobloxScanner_V1_5_"
+    local evidenceName = base .. "Evidence.txt"
+    local networkName = base .. "NetworkMap.txt"
+    local coreName = base .. "CoreSource.txt"
+
+    local evidence = table.concat({
+        reportData.summary or "",
+        "\n\n================ NETWORK MAP ================\n\n",
+        reportData.network or "",
+        "\n\n================ CORE SOURCE ================\n\n",
+        reportData.coreSource or "",
+    })
+
+    local okEvidence, errEvidence = pcall(function() writefile(evidenceName, evidence) end)
+    local okNetwork, errNetwork = pcall(function() writefile(networkName, reportData.network or "") end)
+    local okCore, errCore = pcall(function() writefile(coreName, reportData.coreSource or "") end)
+
+    if not okEvidence then
+        return false, "Evidence: " .. tostring(errEvidence)
+    end
+
+    local warnings = {}
+    if not okNetwork then warnings[#warnings + 1] = "NetworkMap: " .. tostring(errNetwork) end
+    if not okCore then warnings[#warnings + 1] = "CoreSource: " .. tostring(errCore) end
+
+    return true, {
+        evidence = evidenceName,
+        network = okNetwork and networkName or nil,
+        core = okCore and coreName or nil,
+        chars = #evidence,
+        warnings = warnings,
+    }
+end
+
 NextPart.MouseButton1Click:Connect(function()
     if not activeChunks or #activeChunks <= 1 then return end
     activeChunkIndex = activeChunkIndex + 1
@@ -185,7 +224,8 @@ NetworkSourceButton.MouseButton1Click:Connect(function()
             reportData = buildReports()
         end, function(message) return tostring(message) end)
         if ok then
-            terminalSet(table.concat({
+            local saveOk, saveResult = saveEvidenceFiles()
+            local lines = {
                 "[NETWORK SOURCE COMPLETADO]",
                 "Targets: " .. tostring(#state.source.targets),
                 "Resultados: " .. tostring(#state.source.results),
@@ -193,9 +233,23 @@ NetworkSourceButton.MouseButton1Click:Connect(function()
                 "Require lines: " .. tostring(state.source.totalRequires),
                 "Source chars: " .. tostring(state.source.sourceChars),
                 "",
-                "Usa COPIAR NETWORK MAP.",
-                "Si hace falta ver la implementación central completa: COPIAR CORE SOURCE.",
-            }, "\n"))
+            }
+
+            if saveOk then
+                lines[#lines + 1] = "ARCHIVO PRINCIPAL GUARDADO:"
+                lines[#lines + 1] = saveResult.evidence
+                lines[#lines + 1] = "Caracteres: " .. tostring(saveResult.chars)
+                lines[#lines + 1] = ""
+                lines[#lines + 1] = "SUBE ESE .txt DIRECTAMENTE AL CHAT."
+                if #saveResult.warnings > 0 then
+                    lines[#lines + 1] = "Warnings secundarios: " .. table.concat(saveResult.warnings, " | ")
+                end
+            else
+                lines[#lines + 1] = "No se pudo guardar archivo: " .. tostring(saveResult)
+                lines[#lines + 1] = "Fallback: usa COPIAR NETWORK MAP / CORE SOURCE."
+            end
+
+            terminalSet(table.concat(lines, "\n"))
             CopyNetwork.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
             CopyNetwork.TextColor3 = Color3.fromRGB(245, 247, 251)
             CopyNetwork.AutoButtonColor = true
