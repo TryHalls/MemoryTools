@@ -1,6 +1,7 @@
--- Roblox Client Scanner V1.4 GUI loader
+-- Roblox Client Scanner V1.5 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
-local VERSION = "1.4.0"
+local VERSION = "1.5.0"
+local ORDER = {1, 6, 2, 3, 4, 5}
 
 local function showError(message)
     local Players = game:GetService("Players")
@@ -37,7 +38,7 @@ local function showError(message)
     title.Position = UDim2.new(0, 14, 0, 10)
     title.Size = UDim2.new(1, -28, 0, 28)
     title.Font = Enum.Font.GothamBold
-    title.Text = "SCANNER V1.4 - ERROR"
+    title.Text = "SCANNER V1.5 - ERROR"
     title.TextColor3 = Color3.fromRGB(255, 120, 120)
     title.TextSize = 15
     title.TextXAlignment = Enum.TextXAlignment.Left
@@ -71,37 +72,26 @@ local function showError(message)
 
     copy.MouseButton1Click:Connect(function()
         local clipboard = type(setclipboard) == "function" and setclipboard or (type(toclipboard) == "function" and toclipboard or nil)
-        if clipboard then
-            pcall(function()
-                clipboard(tostring(message))
-            end)
-        end
+        if clipboard then pcall(function() clipboard(tostring(message)) end) end
     end)
 end
 
 local ok, result = xpcall(function()
     local chunks = {}
-
-    for i = 1, 5 do
-        local url = BASE .. tostring(i) .. ".lua.txt?v=" .. VERSION
-        local success, source = pcall(function()
-            return game:HttpGet(url)
-        end)
-
+    for orderIndex, partNumber in ipairs(ORDER) do
+        local url = BASE .. tostring(partNumber) .. ".lua.txt?v=" .. VERSION
+        local success, source = pcall(function() return game:HttpGet(url) end)
         if not success or type(source) ~= "string" or #source == 0 then
-            error("No se pudo descargar part" .. tostring(i) .. ": " .. tostring(source))
+            error("No se pudo descargar part" .. tostring(partNumber) .. ": " .. tostring(source))
         end
-
-        chunks[i] = source
+        chunks[orderIndex] = source
     end
 
     local source = table.concat(chunks, "\n")
     local compiled, compileError = loadstring(source)
-
     if not compiled then
         error("Error compilando la GUI:\n" .. tostring(compileError))
     end
-
     return compiled()
 end, function(err)
     return tostring(err)
