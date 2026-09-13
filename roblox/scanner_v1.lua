@@ -1,6 +1,7 @@
 -- Roblox Client Scanner V1.5 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
 local VERSION = "1.5.0"
+local CACHE_VERSION = "1.5.1"
 local ORDER = {1, 2, 3, 4, 5}
 
 local function showError(message)
@@ -79,7 +80,7 @@ end
 local ok, result = xpcall(function()
     local chunks = {}
     for orderIndex, partNumber in ipairs(ORDER) do
-        local url = BASE .. tostring(partNumber) .. ".lua.txt?v=" .. VERSION
+        local url = BASE .. tostring(partNumber) .. ".lua.txt?v=" .. CACHE_VERSION
         local success, source = pcall(function() return game:HttpGet(url) end)
         if not success or type(source) ~= "string" or #source == 0 then
             error("No se pudo descargar part" .. tostring(partNumber) .. ": " .. tostring(source))
