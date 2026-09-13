@@ -1,15 +1,3 @@
-Title.Font = Enum.Font.GothamBold
-Title.Text = "ROBLOX CLIENT SCANNER • V" .. VERSION
-Title.TextColor3 = Color3.fromRGB(238, 241, 247)
-Title.TextSize = 15
-Title.TextXAlignment = Enum.TextXAlignment.Left
-
-local Close = Instance.new("TextButton", Topbar)
-Close.AnchorPoint = Vector2.new(1, 0.5)
-Close.Position = UDim2.new(1, -10, 0.5, 0)
-Close.Size = UDim2.fromOffset(32, 28)
-Close.BackgroundColor3 = Color3.fromRGB(47, 51, 61)
-Close.BorderSizePixel = 0
 Close.Font = Enum.Font.GothamBold
 Close.Text = "×"
 Close.TextColor3 = Color3.new(1, 1, 1)
@@ -26,7 +14,7 @@ Left.Size = UDim2.new(0.34, -5, 1, 0)
 Left.BackgroundColor3 = Color3.fromRGB(26, 29, 35)
 Left.BorderSizePixel = 0
 Left.ScrollBarThickness = 4
-Left.CanvasSize = UDim2.new(0, 0, 0, 930)
+Left.CanvasSize = UDim2.new(0, 0, 0, 760)
 Instance.new("UICorner", Left).CornerRadius = UDim.new(0, 9)
 
 local Right = Instance.new("Frame", Content)
@@ -36,123 +24,118 @@ Right.BackgroundColor3 = Color3.fromRGB(13, 15, 18)
 Right.BorderSizePixel = 0
 Instance.new("UICorner", Right).CornerRadius = UDim.new(0, 9)
 
-local function makeLabel(parent, text, y, height, bold)
-    local label = Instance.new("TextLabel", parent)
-    label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 12, 0, y)
-    label.Size = UDim2.new(1, -24, 0, height)
-    label.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-    label.Text = text
-    label.TextColor3 = bold and Color3.fromRGB(230, 233, 239) or Color3.fromRGB(155, 162, 175)
-    label.TextSize = bold and 13 or 11
-    label.TextWrapped = true
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    return label
+local function label(text, y, h, bold)
+    local l = Instance.new("TextLabel", Left)
+    l.BackgroundTransparency = 1
+    l.Position = UDim2.new(0, 12, 0, y)
+    l.Size = UDim2.new(1, -24, 0, h)
+    l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.Text = text
+    l.TextColor3 = bold and Color3.fromRGB(230,233,239) or Color3.fromRGB(155,162,175)
+    l.TextSize = bold and 13 or 11
+    l.TextWrapped = true
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextYAlignment = Enum.TextYAlignment.Top
+    return l
 end
 
-local function makeButton(text, y, color)
-    local button = Instance.new("TextButton", Left)
-    button.Position = UDim2.new(0, 12, 0, y)
-    button.Size = UDim2.new(1, -24, 0, 40)
-    button.BackgroundColor3 = color or Color3.fromRGB(55, 92, 168)
-    button.BorderSizePixel = 0
-    button.Font = Enum.Font.GothamBold
-    button.Text = text
-    button.TextColor3 = Color3.fromRGB(245, 247, 251)
-    button.TextSize = 12
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
-    return button
+local function button(text, y, color)
+    local b = Instance.new("TextButton", Left)
+    b.Position = UDim2.new(0, 12, 0, y)
+    b.Size = UDim2.new(1, -24, 0, 40)
+    b.BackgroundColor3 = color or Color3.fromRGB(55,92,168)
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamBold
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(245,247,251)
+    b.TextSize = 12
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    return b
 end
 
-makeLabel(Left, "CONTROLES", 12, 22, true)
-makeLabel(Left, "V1.5 inspecciona solo los módulos de networking confirmados. Extrae requires, call-sites y origen probable del alias sin ejecutar ningún remote.", 42, 72, false)
-local ScanButton = makeButton("INICIAR SCAN", 122)
-local NetworkSourceButton = makeButton("ANALIZAR NETWORK SOURCE", 168, Color3.fromRGB(52, 56, 66))
-NetworkSourceButton.AutoButtonColor = false
-NetworkSourceButton.TextColor3 = Color3.fromRGB(122, 128, 139)
+label("ÚLTIMO PASE", 12, 22, true)
+label("Cierra Auto Steal + Player. No invoca remotes ni require(); solo estructura runtime y decompilado dirigido.", 40, 68, false)
+local ScanButton = button("INICIAR FINAL SCAN", 114)
+local SourceButton = button("ANALIZAR FINAL SOURCE", 160, Color3.fromRGB(52,56,66))
+SourceButton.AutoButtonColor = false
+SourceButton.TextColor3 = Color3.fromRGB(122,128,139)
 
-makeLabel(Left, "EXPORTAR", 224, 20, true)
-local CopySummary = makeButton("COPIAR RESUMEN", 250, Color3.fromRGB(52, 56, 66))
-local CopyNetwork = makeButton("COPIAR NETWORK MAP", 296, Color3.fromRGB(52, 56, 66))
-local CopyCoreSource = makeButton("COPIAR CORE SOURCE", 342, Color3.fromRGB(52, 56, 66))
-local CopyRemotes = makeButton("COPIAR REMOTES", 388, Color3.fromRGB(52, 56, 66))
-local CopyTargets = makeButton("COPIAR TARGETS", 434, Color3.fromRGB(52, 56, 66))
-local NextPart = makeButton("SIGUIENTE PARTE", 480, Color3.fromRGB(80, 73, 124))
+label("EXPORTAR", 216, 20, true)
+local CopyFinal = button("COPIAR FINAL MAP", 242, Color3.fromRGB(52,56,66))
+local CopyRuntime = button("COPIAR RUNTIME MAP", 288, Color3.fromRGB(52,56,66))
+local CopySource = button("COPIAR SOURCE MAP", 334, Color3.fromRGB(52,56,66))
+local CopySummary = button("COPIAR RESUMEN", 380, Color3.fromRGB(52,56,66))
+local NextPart = button("SIGUIENTE PARTE", 426, Color3.fromRGB(80,73,124))
 NextPart.Visible = false
 
-makeLabel(Left, "ESTADO", 536, 20, true)
-local Status = makeLabel(Left, "Listo para iniciar.", 562, 64, false)
+label("ESTADO", 482, 20, true)
+local Status = label("Listo.", 508, 60, false)
 local ProgressBack = Instance.new("Frame", Left)
-ProgressBack.Position = UDim2.new(0, 12, 0, 636)
-ProgressBack.Size = UDim2.new(1, -24, 0, 8)
-ProgressBack.BackgroundColor3 = Color3.fromRGB(42, 46, 55)
+ProgressBack.Position = UDim2.new(0,12,0,574)
+ProgressBack.Size = UDim2.new(1,-24,0,8)
+ProgressBack.BackgroundColor3 = Color3.fromRGB(42,46,55)
 ProgressBack.BorderSizePixel = 0
-Instance.new("UICorner", ProgressBack).CornerRadius = UDim.new(1, 0)
+Instance.new("UICorner", ProgressBack).CornerRadius = UDim.new(1,0)
 local ProgressFill = Instance.new("Frame", ProgressBack)
-ProgressFill.Size = UDim2.fromScale(0, 1)
-ProgressFill.BackgroundColor3 = Color3.fromRGB(91, 139, 231)
+ProgressFill.Size = UDim2.fromScale(0,1)
+ProgressFill.BackgroundColor3 = Color3.fromRGB(91,139,231)
 ProgressFill.BorderSizePixel = 0
-Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(1, 0)
-makeLabel(Left, "Orden: INICIAR SCAN → ANALIZAR NETWORK SOURCE → COPIAR NETWORK MAP. CORE SOURCE contiene solo Packages.Networking y Shared.Remotes decompilados.", 664, 106, false)
+Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(1,0)
+label("Orden: FINAL SCAN → FINAL SOURCE → COPIAR FINAL MAP. Ese reporte debe ser el último antes de programar V1.", 604, 86, false)
 
-local TerminalHeader = Instance.new("TextLabel", Right)
-TerminalHeader.BackgroundColor3 = Color3.fromRGB(21, 24, 29)
-TerminalHeader.BorderSizePixel = 0
-TerminalHeader.Size = UDim2.new(1, 0, 0, 34)
-TerminalHeader.Font = Enum.Font.Code
-TerminalHeader.Text = "  TERMINAL INTERNA"
-TerminalHeader.TextColor3 = Color3.fromRGB(171, 222, 160)
-TerminalHeader.TextSize = 13
-TerminalHeader.TextXAlignment = Enum.TextXAlignment.Left
+local Header = Instance.new("TextLabel", Right)
+Header.BackgroundColor3 = Color3.fromRGB(21,24,29)
+Header.BorderSizePixel = 0
+Header.Size = UDim2.new(1,0,0,34)
+Header.Font = Enum.Font.Code
+Header.Text = "  TERMINAL INTERNA"
+Header.TextColor3 = Color3.fromRGB(171,222,160)
+Header.TextSize = 13
+Header.TextXAlignment = Enum.TextXAlignment.Left
 
-local TerminalScroll = Instance.new("ScrollingFrame", Right)
-TerminalScroll.Position = UDim2.new(0, 8, 0, 42)
-TerminalScroll.Size = UDim2.new(1, -16, 1, -50)
-TerminalScroll.BackgroundTransparency = 1
-TerminalScroll.BorderSizePixel = 0
-TerminalScroll.ScrollBarThickness = 5
-TerminalScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-TerminalScroll.CanvasSize = UDim2.new()
+local Scroll = Instance.new("ScrollingFrame", Right)
+Scroll.Position = UDim2.new(0,8,0,42)
+Scroll.Size = UDim2.new(1,-16,1,-50)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 5
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.CanvasSize = UDim2.new()
 
-local Terminal = Instance.new("TextBox", TerminalScroll)
-Terminal.Size = UDim2.new(1, -8, 0, 0)
+local Terminal = Instance.new("TextBox", Scroll)
+Terminal.Size = UDim2.new(1,-8,0,0)
 Terminal.AutomaticSize = Enum.AutomaticSize.Y
 Terminal.BackgroundTransparency = 1
 Terminal.Font = Enum.Font.Code
 Terminal.MultiLine = true
 Terminal.ClearTextOnFocus = false
-Terminal.Text = "[READY] Scanner V1.5 cargado.\nPulsa INICIAR SCAN."
-Terminal.TextColor3 = Color3.fromRGB(200, 205, 214)
+Terminal.TextEditable = false
+Terminal.Text = "[READY] V1.6 listo.\nPulsa INICIAR FINAL SCAN."
+Terminal.TextColor3 = Color3.fromRGB(200,205,214)
 Terminal.TextSize = 12
 Terminal.TextWrapped = true
 Terminal.TextXAlignment = Enum.TextXAlignment.Left
 Terminal.TextYAlignment = Enum.TextYAlignment.Top
-Terminal.TextEditable = false
 
 local function terminalSet(text)
     Terminal.Text = tostring(text)
-    task.defer(function() TerminalScroll.CanvasPosition = Vector2.new(0, 0) end)
+    task.defer(function() Scroll.CanvasPosition = Vector2.new(0,0) end)
 end
 
 local function terminalAdd(text)
     Terminal.Text = Terminal.Text .. "\n" .. tostring(text)
-    task.defer(function()
-        TerminalScroll.CanvasPosition = Vector2.new(0, math.max(0, TerminalScroll.AbsoluteCanvasSize.Y))
-    end)
+    task.defer(function() Scroll.CanvasPosition = Vector2.new(0, math.max(0, Scroll.AbsoluteCanvasSize.Y)) end)
 end
 
 local function setStatus(text, progress)
     Status.Text = tostring(text)
     if progress ~= nil then
-        ProgressFill.Size = UDim2.fromScale(math.clamp(progress, 0, 1), 1)
+        ProgressFill.Size = UDim2.fromScale(math.clamp(progress,0,1),1)
     end
 end
 
-local dragging = false
-local dragStart
-local startPosition
-Topbar.InputBegan:Connect(function(input)
+local dragging, dragStart, startPosition = false, nil, nil
+Top.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
@@ -166,32 +149,21 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
 end)
 Close.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
 
 -- State -----------------------------------------------------------------------
 
-local running = false
-local sourceRunning = false
-local reportData = nil
-local activeChunks = nil
-local activeChunkIndex = 1
-local activeExportName = nil
-
-local function emptySourceState()
+local function emptySource()
     return {
         attempted = false,
         targets = {},
-        missingTargets = {},
+        missing = {},
         results = {},
         failures = {},
-        totalCalls = 0,
-        totalRequires = 0,
         sourceChars = 0,
-        coreSource = {},
+        contexts = 0,
     }
 end
 
@@ -199,19 +171,33 @@ local function emptyState()
     return {
         total = 0,
         seen = {},
-        roots = {},
-        remotes = {},
         modules = {},
         scripts = {},
+        roots = {},
         warnings = {},
-        skippedHeavy = {},
-        classCounts = {},
-        capabilities = {
-            decompile = type(decompile) == "function",
-            getconnections = type(getconnections) == "function",
-            getgc = type(getgc) == "function",
-            getsenv = type(getsenv) == "function",
-        },
-        source = emptySourceState(),
+        runtimeHits = {},
+        runtimeHitSeen = {},
+        humanoid = {},
+        source = emptySource(),
     }
 end
+
+local state = emptyState()
+local reports = nil
+local running = false
+local sourceRunning = false
+local activeChunks, activeIndex, activeName = nil, 1, nil
+
+local function ownGui(instance)
+    return instance == ScreenGui or safeCall(function() return instance:IsDescendantOf(ScreenGui) end, false)
+end
+
+local function pathMatchesOwner(instance)
+    local path = string.lower(fullName(instance))
+    local name = string.lower(LocalPlayer.Name)
+    if path:find(name, 1, true) then return true end
+    local attrs = safeCall(function() return instance:GetAttributes() end, {})
+    if type(attrs) == "table" then
+        for key, value in pairs(attrs) do
+            local k = string.lower(tostring(key))
+            if k:find("owner",1,true) or k:find("user",1,true) or k:find("player",1,true) then
