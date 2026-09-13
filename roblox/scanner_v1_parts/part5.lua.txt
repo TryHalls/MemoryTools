@@ -1,96 +1,214 @@
-            setStatus("Generando reportes...", 0.98)
-            task.wait()
-            reportData = buildReports()
-            reportData.summary = string.gsub(reportData.summary, "V1%.4", "V1.5")
-            reportData.core = string.gsub(reportData.core, "V1%.4", "V1.5")
-            reportData.remotes = string.gsub(reportData.remotes, "V1%.4", "V1.5")
-            reportData.modules = string.gsub(reportData.modules, "V1%.4", "V1.5")
-            reportData.scripts = string.gsub(reportData.scripts, "V1%.4", "V1.5")
-            reportData.structure = string.gsub(reportData.structure, "V1%.4", "V1.5")
-            reportData.source = V15Patch.buildSourceMap(state)
-            reportData.all = buildAll(reportData.summary, reportData.core, reportData.source, reportData.remotes, reportData.modules, reportData.scripts, reportData.structure)
-        end, function(message)
-            return tostring(message)
-        end)
-
-        if ok then
-            setStatus("Scan V1.5 completado • " .. tostring(state.total) .. " objetos", 1)
-            terminalSet(compactTerminalSummary())
-            setExportsEnabled(true)
-            CopySource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
-            CopySource.TextColor3 = Color3.fromRGB(122, 128, 139)
-            CopySource.AutoButtonColor = false
-            setSourceButtonEnabled(state.capabilities.decompile)
-            ScanButton.Text = "ESCANEAR DE NUEVO"
-            ScanButton.AutoButtonColor = true
+        "Decompiler reconstruction for the two central networking modules only.",
+        "No code in this export was executed by the scanner.",
+        "",
+    }
+    for _, label in ipairs({"Networking", "Remotes"}) do
+        lines[#lines + 1] = "================ " .. label .. " ================"
+        local source = state.source.coreSource[label]
+        if source then
+            lines[#lines + 1] = source
         else
-            reportData = nil
-            setStatus("Error durante el scan", 0)
+            lines[#lines + 1] = "[SOURCE NOT AVAILABLE]"
+        end
+        lines[#lines + 1] = ""
+    end
+    return table.concat(lines, "\n")
+end
+
+local function buildRemotesReport()
+    local lines = {"ROBLOX CLIENT SCANNER V1.5 - REMOTES", "Total: " .. tostring(#state.remotes), ""}
+    table.sort(state.remotes, function(a, b) return a.path < b.path end)
+    for index, remote in ipairs(state.remotes) do
+        lines[#lines + 1] = string.format("#%d [%s] %s", index, remote.className, remote.path)
+    end
+    return table.concat(lines, "\n")
+end
+
+local function buildReports()
+    return {
+        summary = buildSummary(),
+        network = buildNetworkMap(),
+        coreSource = buildCoreSource(),
+        remotes = buildRemotesReport(),
+        targets = buildTargetsReport(),
+    }
+end
+
+-- Export ----------------------------------------------------------------------
+
+local function splitText(text, maxLength)
+    local chunks = {}
+    local cursor = 1
+    while cursor <= #text do
+        local finish = math.min(cursor + maxLength - 1, #text)
+        if finish < #text then
+            local candidate = string.sub(text, cursor, finish)
+            local last = nil
+            for index = #candidate, 1, -1 do
+                if string.sub(candidate, index, index) == "\n" then last = index break end
+            end
+            if last and last > math.floor(maxLength * 0.65) then finish = cursor + last - 2 end
+        end
+        chunks[#chunks + 1] = string.sub(text, cursor, finish)
+        cursor = finish + 1
+    end
+    if #chunks == 0 then chunks[1] = "" end
+    return chunks
+end
+
+local function clipboardFunction()
+    if type(setclipboard) == "function" then return setclipboard end
+    if type(toclipboard) == "function" then return toclipboard end
+    return nil
+end
+
+local function copyActiveChunk()
+    if not activeChunks then return end
+    local copy = clipboardFunction()
+    if not copy then
+        terminalSet(activeChunks[activeChunkIndex])
+        setStatus("Portapapeles no disponible; bloque mostrado en terminal.")
+        return
+    end
+    local ok, err = pcall(function() copy(activeChunks[activeChunkIndex]) end)
+    if ok then
+        local label = string.format("%s • parte %d/%d", activeExportName or "Reporte", activeChunkIndex, #activeChunks)
+        setStatus(label .. " copiada")
+        terminalSet("[COPIADO]\n" .. label .. "\nCaracteres: " .. tostring(#activeChunks[activeChunkIndex]))
+        NextPart.Visible = #activeChunks > 1
+        if #activeChunks > 1 then NextPart.Text = string.format("SIGUIENTE PARTE (%d/%d)", activeChunkIndex, #activeChunks) end
+    else
+        terminalSet("[ERROR COPY]\n" .. tostring(err))
+    end
+end
+
+local function exportCategory(name, text)
+    activeExportName = name
+    activeChunks = splitText(text or "", CONFIG.CHUNK_SIZE)
+    activeChunkIndex = 1
+    copyActiveChunk()
+end
+
+NextPart.MouseButton1Click:Connect(function()
+    if not activeChunks or #activeChunks <= 1 then return end
+    activeChunkIndex = activeChunkIndex + 1
+    if activeChunkIndex > #activeChunks then activeChunkIndex = 1 end
+    copyActiveChunk()
+end)
+
+local exportButtons = {CopySummary, CopyNetwork, CopyCoreSource, CopyRemotes, CopyTargets}
+local function setExportsEnabled(enabled)
+    for _, button in ipairs(exportButtons) do
+        button.BackgroundColor3 = enabled and Color3.fromRGB(55, 126, 82) or Color3.fromRGB(52, 56, 66)
+        button.TextColor3 = enabled and Color3.fromRGB(245, 247, 251) or Color3.fromRGB(122, 128, 139)
+        button.AutoButtonColor = enabled
+    end
+end
+
+local function setNetworkButtonEnabled(enabled)
+    NetworkSourceButton.BackgroundColor3 = enabled and Color3.fromRGB(120, 82, 168) or Color3.fromRGB(52, 56, 66)
+    NetworkSourceButton.TextColor3 = enabled and Color3.fromRGB(245, 247, 251) or Color3.fromRGB(122, 128, 139)
+    NetworkSourceButton.AutoButtonColor = enabled
+end
+
+setExportsEnabled(false)
+setNetworkButtonEnabled(false)
+
+CopySummary.MouseButton1Click:Connect(function() if reportData then exportCategory("Resumen", reportData.summary) end end)
+CopyNetwork.MouseButton1Click:Connect(function() if reportData then exportCategory("Network Map", reportData.network) end end)
+CopyCoreSource.MouseButton1Click:Connect(function() if reportData then exportCategory("Core Source", reportData.coreSource) end end)
+CopyRemotes.MouseButton1Click:Connect(function() if reportData then exportCategory("Remotes", reportData.remotes) end end)
+CopyTargets.MouseButton1Click:Connect(function() if reportData then exportCategory("Targets", reportData.targets) end end)
+
+-- Actions ---------------------------------------------------------------------
+
+ScanButton.MouseButton1Click:Connect(function()
+    if running or sourceRunning then return end
+    running = true
+    state = emptyState()
+    reportData = nil
+    activeChunks = nil
+    NextPart.Visible = false
+    setExportsEnabled(false)
+    setNetworkButtonEnabled(false)
+    ScanButton.Text = "ESCANEANDO..."
+    terminalSet("[START] Scanner V1.5\n[INFO] Inventario pasivo para localizar remotes y targets.")
+    task.spawn(function()
+        local ok, err = xpcall(function()
+            local roots = getRoots()
+            for index, root in ipairs(roots) do scanRoot(root, index, #roots) end
+            selectTargets()
+            reportData = buildReports()
+        end, function(message) return tostring(message) end)
+        if ok then
+            setStatus("Scan completado • " .. tostring(state.total) .. " objetos", 1)
+            terminalSet(table.concat({
+                "[SCAN COMPLETADO]",
+                "Objects: " .. tostring(state.total),
+                "Remotes: " .. tostring(#state.remotes),
+                "Targets encontrados: " .. tostring(#state.source.targets) .. "/" .. tostring(#TARGET_RULES),
+                "",
+                state.capabilities.decompile and "Siguiente: ANALIZAR NETWORK SOURCE" or "decompile() no disponible",
+            }, "\n"))
+            reportData = buildReports()
+            setExportsEnabled(true)
+            CopyNetwork.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+            CopyNetwork.TextColor3 = Color3.fromRGB(122, 128, 139)
+            CopyNetwork.AutoButtonColor = false
+            CopyCoreSource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+            CopyCoreSource.TextColor3 = Color3.fromRGB(122, 128, 139)
+            CopyCoreSource.AutoButtonColor = false
+            setNetworkButtonEnabled(state.capabilities.decompile)
+            ScanButton.Text = "ESCANEAR DE NUEVO"
+        else
             terminalSet("SCANNER V1.5 ERROR\n\n" .. tostring(err))
             ScanButton.Text = "REINTENTAR SCAN"
-            ScanButton.AutoButtonColor = true
-            setSourceButtonEnabled(false)
         end
-
+        ScanButton.AutoButtonColor = true
         running = false
     end)
 end)
 
-SourceScanButton.MouseButton1Click:Connect(function()
-    if running or sourceRunning or not reportData then
-        return
-    end
-
+NetworkSourceButton.MouseButton1Click:Connect(function()
+    if running or sourceRunning or not reportData then return end
     if not state.capabilities.decompile then
-        setStatus("decompile() no disponible", 0)
-        terminalSet("[SOURCE ERROR]\ndecompile() no está disponible en este ejecutor.")
+        terminalSet("[NETWORK SOURCE ERROR]\ndecompile() no disponible.")
         return
     end
-
     sourceRunning = true
-    SourceScanButton.Text = "ANALIZANDO SOURCE..."
-    SourceScanButton.AutoButtonColor = false
-    ScanButton.AutoButtonColor = false
-    CopySource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
-    CopySource.TextColor3 = Color3.fromRGB(122, 128, 139)
-    CopySource.AutoButtonColor = false
-
+    NetworkSourceButton.Text = "ANALIZANDO..."
+    NetworkSourceButton.AutoButtonColor = false
     task.spawn(function()
-        local ok, resultOrError = xpcall(function()
-            local success, message = V15Patch.run(state, buildSourceCandidates, setStatus, terminalSet, terminalAdd)
-            if not success then
-                error(message or "source analysis failed")
-            end
+        local ok, err = xpcall(function()
+            local success, message = runNetworkSourceAnalysis()
+            if not success then error(message or "network source failed") end
             reportData = buildReports()
-            reportData.summary = string.gsub(reportData.summary, "V1%.4", "V1.5")
-            reportData.core = string.gsub(reportData.core, "V1%.4", "V1.5")
-            reportData.remotes = string.gsub(reportData.remotes, "V1%.4", "V1.5")
-            reportData.modules = string.gsub(reportData.modules, "V1%.4", "V1.5")
-            reportData.scripts = string.gsub(reportData.scripts, "V1%.4", "V1.5")
-            reportData.structure = string.gsub(reportData.structure, "V1%.4", "V1.5")
-            reportData.source = V15Patch.buildSourceMap(state)
-            reportData.all = buildAll(reportData.summary, reportData.core, reportData.source, reportData.remotes, reportData.modules, reportData.scripts, reportData.structure)
-            return true
-        end, function(message)
-            return tostring(message)
-        end)
-
+        end, function(message) return tostring(message) end)
         if ok then
-            setStatus("SOURCE V1.5 completado", 1)
-            terminalSet(V15Patch.compactSourceSummary(state))
-            CopySource.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
-            CopySource.TextColor3 = Color3.fromRGB(245, 247, 251)
-            CopySource.AutoButtonColor = true
-            SourceScanButton.Text = "REANALIZAR SOURCE"
-            SourceScanButton.AutoButtonColor = true
+            terminalSet(table.concat({
+                "[NETWORK SOURCE COMPLETADO]",
+                "Targets: " .. tostring(#state.source.targets),
+                "Resultados: " .. tostring(#state.source.results),
+                "Call-sites: " .. tostring(state.source.totalCalls),
+                "Require lines: " .. tostring(state.source.totalRequires),
+                "Source chars: " .. tostring(state.source.sourceChars),
+                "",
+                "Usa COPIAR NETWORK MAP.",
+                "Si hace falta ver la implementación central completa: COPIAR CORE SOURCE.",
+            }, "\n"))
+            CopyNetwork.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
+            CopyNetwork.TextColor3 = Color3.fromRGB(245, 247, 251)
+            CopyNetwork.AutoButtonColor = true
+            CopyCoreSource.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
+            CopyCoreSource.TextColor3 = Color3.fromRGB(245, 247, 251)
+            CopyCoreSource.AutoButtonColor = true
+            NetworkSourceButton.Text = "REANALIZAR NETWORK SOURCE"
+            NetworkSourceButton.AutoButtonColor = true
         else
-            setStatus("Error en SOURCE", 0)
-            terminalSet("SOURCE V1.5 ERROR\n\n" .. tostring(resultOrError))
-            SourceScanButton.Text = "REINTENTAR SOURCE"
-            SourceScanButton.AutoButtonColor = true
+            terminalSet("NETWORK SOURCE V1.5 ERROR\n\n" .. tostring(err))
+            NetworkSourceButton.Text = "REINTENTAR NETWORK SOURCE"
+            NetworkSourceButton.AutoButtonColor = true
         end
-
-        ScanButton.AutoButtonColor = true
         sourceRunning = false
     end)
 end)
