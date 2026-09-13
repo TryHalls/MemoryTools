@@ -1,13 +1,14 @@
--- Roblox Client Scanner V1.5
--- Focused passive inventory + targeted network source inspector.
+-- Roblox Client Scanner V1.6
+-- Final targeted research pass before official script development.
+-- Passive inventory + targeted decompiler excerpts. No remotes invoked; no ModuleScripts required.
 
-local VERSION = "1.5.0"
+local VERSION = "1.6.0"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 local CollectionService = game:GetService("CollectionService")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
@@ -16,25 +17,22 @@ if not LocalPlayer then
 end
 
 local CONFIG = {
-    CHUNK_SIZE = 15000,
-    YIELD_EVERY = 140,
-    MAX_STRING = 420,
-    MAX_CONTEXT_LINE = 260,
-    MAX_CALLS_PER_SCRIPT = 80,
-    MAX_REQUIRES_PER_SCRIPT = 50,
-    MAX_INTERESTING_LINES = 80,
-    MAX_ALIAS_LOOKBACK = 45,
-    CONTEXT_LINES_BEFORE = 2,
-    CONTEXT_LINES_AFTER = 3,
+    CHUNK_SIZE = 14500,
+    YIELD_EVERY = 180,
+    MAX_CONTEXT_LINE = 320,
+    CONTEXT_BEFORE = 4,
+    CONTEXT_AFTER = 6,
+    MAX_CONTEXTS_PER_TARGET = 28,
+    MAX_REQUIRES_PER_TARGET = 45,
+    MAX_RUNTIME_HITS = 260,
+    MAX_CHILD_PREVIEW = 18,
     ROOTS = {
-        ReplicatedStorage = { maxDepth = 11, maxObjects = 14000 },
-        Workspace = { maxDepth = 5, maxObjects = 5000 },
-        Character = { maxDepth = 8, maxObjects = 1800 },
-        Backpack = { maxDepth = 7, maxObjects = 1200 },
-        PlayerGui = { maxDepth = 8, maxObjects = 3500 },
-        PlayerScripts = { maxDepth = 10, maxObjects = 4000 },
+        ReplicatedStorage = {maxDepth = 12, maxObjects = 15000},
+        Workspace = {maxDepth = 8, maxObjects = 14000},
+        PlayerScripts = {maxDepth = 12, maxObjects = 6000},
+        Character = {maxDepth = 8, maxObjects = 1800},
     },
-    HEAVY_REPLICATED_TOP_LEVEL = {
+    HEAVY_REPLICATED = {
         AssetModels = true,
         CutsceneAssets = true,
         Assets = true,
@@ -42,104 +40,75 @@ local CONFIG = {
 }
 
 local TARGET_RULES = {
-    { label = "Networking", suffix = "replicatedstorage.packages.networking" },
-    { label = "Remotes", suffix = "replicatedstorage.shared.remotes" },
-    { label = "EggState", suffix = "replicatedstorage.client.eggstate" },
-    { label = "Save", suffix = "replicatedstorage.shared.save" },
-    { label = "PlotState", suffix = "replicatedstorage.client.plotstate" },
-    { label = "ReplicatorClient", suffix = "replicatedstorage.client.modules.replicatorclient" },
-    { label = "OfflineMoneyBucketPiles", suffix = ".playerscripts.game.plots.offlinemoney.offlinemoneybucketpiles" },
-    { label = "TreadmillStaticController", suffix = ".playerscripts.game.plots.treadmillstaticcontroller" },
-    { label = "GuardTutorialController", suffix = ".playerscripts.game.guardareas.guardtutorialcontroller" },
-    { label = "ForestGuardRuntime", suffix = ".playerscripts.game.guardareas.forestguardruntime" },
+    {label = "EggState", suffix = "replicatedstorage.client.eggstate"},
+    {label = "AreaEggSlotIdentity", suffix = "replicatedstorage.shared.util.areaeggslotidentity"},
+    {label = "AreaEggsTypes", suffix = "replicatedstorage.shared.types.areaeggs"},
+    {label = "NestResolver", suffix = ".playerscripts.game.areaeggs.nestresolver"},
+    {label = "WorkspaceEggVisibility", suffix = ".playerscripts.game.areaeggs.workspaceeggvisibility"},
+    {label = "AreaEggNearbyPulse", suffix = ".playerscripts.game.areaeggs.areaeggnearbypulse"},
+    {label = "HoverHighlight", suffix = ".playerscripts.game.areaeggs.hoverhighlight"},
+    {label = "RareEggHighlight", suffix = ".playerscripts.game.areaeggs.rareegghighlight"},
+    {label = "PlotState", suffix = "replicatedstorage.client.plotstate"},
+    {label = "PlotsTypes", suffix = "replicatedstorage.shared.types.plots"},
+    {label = "SharedPlayer", suffix = "replicatedstorage.shared.player"},
+    {label = "WalkSpeedGovernor", suffix = "replicatedstorage.shared.util.walkspeedgovernor"},
+    {label = "SpeedPowerProjection", suffix = "replicatedstorage.client.speedpowerprojection"},
 }
 
-local NETWORK_TOKENS = {
-    "FireServer",
-    "InvokeServer",
-    "OnClientEvent",
-    "OnClientInvoke",
-    "OnServerEvent",
-    "OnServerInvoke",
+local FOCUS_TERMS = {
+    "CarryFieldEgg", "AskFieldEggCarry", "FirstAreaSlotKey", "FieldEgg", "EggUid",
+    "Uid", "AreaEggSlot", "SlotKey", "Nest", "LocalCFrame", "AskFieldEggDrop",
+    "PlotFolder", "SpawnPoint", "CenterPoint", "PetArea", "YourBase", "Homestead",
+    "AskState", "StateShifted", "WalkSpeed", "JumpPower", "JumpHeight", "UseJumpPower",
+    "HumanoidRootPart", "SpeedPower", "HipHeight", "Gravity", "PivotTo", "GetPivot",
 }
 
-local INTERESTING_KEYWORDS = {
-    "network", "remote", "findfirstchild", "waitforchild", "fireserver", "invokeserver",
-    "onclientevent", "onclientinvoke", "onserverevent", "onserverinvoke", "require(",
-    "remoteevent", "remotefunction", "replicatedstorage", "__replicatorinternal",
+local RUNTIME_NAME_TERMS = {
+    "egg", "slot", "nest", "plot", "base", "spawn", "petarea", "centerpoint", "areaegg",
 }
 
-local function safeCall(callback, fallback)
-    local ok, result = pcall(callback)
-    if ok then
-        return result
-    end
+local RUNTIME_ATTR_TERMS = {
+    "uid", "egg", "slot", "area", "plot", "owner", "player", "user",
+}
+
+local function safeCall(fn, fallback)
+    local ok, result = pcall(fn)
+    if ok then return result end
     return fallback
-end
-
-local function fullName(instance)
-    return safeCall(function()
-        return instance:GetFullName()
-    end, instance and instance.Name or "unknown")
-end
-
-local function sanitize(value, limit)
-    local text = tostring(value)
-    text = text:gsub("\r", "\\r"):gsub("\n", "\\n"):gsub("\t", "\\t")
-    local maximum = limit or CONFIG.MAX_STRING
-    if #text > maximum then
-        return string.sub(text, 1, maximum) .. "...[TRUNCATED]"
-    end
-    return text
 end
 
 local function trim(text)
     text = tostring(text or "")
-    text = text:gsub("^%s+", "")
-    text = text:gsub("%s+$", "")
+    return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function sanitize(value, limit)
+    local text = tostring(value or "")
+    text = text:gsub("\r", "\\r"):gsub("\n", "\\n"):gsub("\t", "\\t")
+    limit = limit or CONFIG.MAX_CONTEXT_LINE
+    if #text > limit then
+        return text:sub(1, limit) .. "...[TRUNCATED]"
+    end
     return text
 end
 
+local function fullName(instance)
+    return safeCall(function() return instance:GetFullName() end, instance and instance.Name or "unknown")
+end
+
 local function endsWith(text, suffix)
-    if #suffix > #text then
-        return false
-    end
-    return string.sub(text, #text - #suffix + 1) == suffix
+    if #suffix > #text then return false end
+    return text:sub(#text - #suffix + 1) == suffix
 end
 
 local function splitLines(source)
+    source = tostring(source or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+    if source:sub(-1) ~= "\n" then source = source .. "\n" end
     local lines = {}
-    source = tostring(source or "")
-    if string.sub(source, -1) ~= "\n" then
-        source = source .. "\n"
-    end
-    for line in string.gmatch(source, "(.-)\n") do
+    for line in source:gmatch("(.-)\n") do
         lines[#lines + 1] = line
     end
     return lines
-end
-
-local function isSensitiveLiteral(value)
-    if #value < 28 then
-        return false
-    end
-    if string.find(value, "%s") then
-        return false
-    end
-    local compact = value:gsub("[%w%-%_%.]", "")
-    return #compact <= math.max(2, math.floor(#value * 0.08))
-end
-
-local function safeLiteral(value)
-    if isSensitiveLiteral(value) then
-        return "[REDACTED_LONG_LITERAL]"
-    end
-    return sanitize(value, 120)
-end
-
-local function getAttributes(instance)
-    local attrs = safeCall(function() return instance:GetAttributes() end, {})
-    return type(attrs) == "table" and attrs or {}
 end
 
 local function getTags(instance)
@@ -147,42 +116,47 @@ local function getTags(instance)
     return type(tags) == "table" and tags or {}
 end
 
-local function sensitiveAttributeKey(key)
+local function sensitiveKey(key)
     local lower = string.lower(tostring(key))
     for _, word in ipairs({"apikey", "api_key", "secret", "token", "password", "credential", "authkey", "accesskey"}) do
-        if string.find(lower, word, 1, true) then
-            return true
-        end
+        if lower:find(word, 1, true) then return true end
     end
     return false
 end
 
-local function formatMetadata(instance)
-    local attrs = getAttributes(instance)
-    local tags = getTags(instance)
-    local parts = {}
-    for key, value in pairs(attrs) do
-        local rendered = sensitiveAttributeKey(key) and "[REDACTED]" or sanitize(value, 120)
-        parts[#parts + 1] = tostring(key) .. "=" .. rendered
+local function formatAttributes(instance)
+    local attrs = safeCall(function() return instance:GetAttributes() end, {})
+    if type(attrs) ~= "table" then return "" end
+    local keys = {}
+    for key in pairs(attrs) do keys[#keys + 1] = key end
+    table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+    local out = {}
+    for _, key in ipairs(keys) do
+        local value = sensitiveKey(key) and "[REDACTED]" or sanitize(attrs[key], 160)
+        out[#out + 1] = tostring(key) .. "=" .. value
     end
-    table.sort(parts)
-    if #tags > 0 then
-        table.sort(tags)
-        parts[#parts + 1] = "Tags=" .. table.concat(tags, ",")
+    return table.concat(out, "; ")
+end
+
+local function childPreview(instance)
+    local children = safeCall(function() return instance:GetChildren() end, {})
+    local names = {}
+    for index, child in ipairs(children) do
+        if index > CONFIG.MAX_CHILD_PREVIEW then break end
+        names[#names + 1] = child.Name .. "[" .. child.ClassName .. "]"
     end
-    return table.concat(parts, "; ")
+    local suffix = #children > CONFIG.MAX_CHILD_PREVIEW and (" ... +" .. tostring(#children - CONFIG.MAX_CHILD_PREVIEW)) or ""
+    return table.concat(names, ", ") .. suffix
 end
 
 -- GUI -------------------------------------------------------------------------
 
 local guiParent = safeCall(function()
-    if type(gethui) == "function" then
-        return gethui()
-    end
+    if type(gethui) == "function" then return gethui() end
 end, nil) or LocalPlayer:WaitForChild("PlayerGui")
 
-local oldGui = guiParent:FindFirstChild("RobloxScannerGUI")
-if oldGui then oldGui:Destroy() end
+local old = guiParent:FindFirstChild("RobloxScannerGUI")
+if old then old:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "RobloxScannerGUI"
@@ -199,19 +173,28 @@ Main.BackgroundColor3 = Color3.fromRGB(20, 22, 27)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
-local mainStroke = Instance.new("UIStroke", Main)
-mainStroke.Color = Color3.fromRGB(73, 80, 94)
-mainStroke.Thickness = 1
-local sizeConstraint = Instance.new("UISizeConstraint", Main)
-sizeConstraint.MinSize = Vector2.new(350, 380)
-sizeConstraint.MaxSize = Vector2.new(1150, 820)
+local constraint = Instance.new("UISizeConstraint", Main)
+constraint.MinSize = Vector2.new(350, 380)
+constraint.MaxSize = Vector2.new(1150, 820)
 
-local Topbar = Instance.new("Frame", Main)
-Topbar.Size = UDim2.new(1, 0, 0, 44)
-Topbar.BackgroundColor3 = Color3.fromRGB(28, 31, 38)
-Topbar.BorderSizePixel = 0
+local Top = Instance.new("Frame", Main)
+Top.Size = UDim2.new(1, 0, 0, 44)
+Top.BackgroundColor3 = Color3.fromRGB(28, 31, 38)
+Top.BorderSizePixel = 0
 
-local Title = Instance.new("TextLabel", Topbar)
+local Title = Instance.new("TextLabel", Top)
 Title.BackgroundTransparency = 1
 Title.Position = UDim2.new(0, 14, 0, 0)
 Title.Size = UDim2.new(1, -60, 1, 0)
+Title.Font = Enum.Font.GothamBold
+Title.Text = "ROBLOX FINAL RESEARCH SCANNER • V" .. VERSION
+Title.TextColor3 = Color3.fromRGB(238, 241, 247)
+Title.TextSize = 14
+Title.TextXAlignment = Enum.TextXAlignment.Left
+
+local Close = Instance.new("TextButton", Top)
+Close.AnchorPoint = Vector2.new(1, 0.5)
+Close.Position = UDim2.new(1, -10, 0.5, 0)
+Close.Size = UDim2.fromOffset(32, 28)
+Close.BackgroundColor3 = Color3.fromRGB(47, 51, 61)
+Close.BorderSizePixel = 0
