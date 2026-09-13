@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.0 stable loader
-local VERSION = "1.0.0"
+-- MemoryTools Official V1.0.1 stable loader
+local VERSION = "1.0.1"
 local BOOTSTRAP_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/bootstrap.lua?v=" .. VERSION
 
 local function environment()
