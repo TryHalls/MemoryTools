@@ -116,6 +116,7 @@ local activeExportName = nil
 local function emptyState()
     return {
         total = 0,
+        seen = {},
         roots = {},
         remotes = {},
         modules = {},
@@ -159,17 +160,12 @@ local function addLimited(list, item, limitName, maximum)
     end
 end
 
-local function makeCommonRecord(instance)
-    return {
-        className = instance.ClassName,
-        name = instance.Name,
-        path = fullName(instance),
-        attributes = getAttributes(instance),
-        tags = getTags(instance),
-    }
-end
-
 local function inspectInstance(instance)
+    if state.seen[instance] then
+        return
+    end
+    state.seen[instance] = true
+
     state.total = state.total + 1
     incrementClass(instance.ClassName)
 
