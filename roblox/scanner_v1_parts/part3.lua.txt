@@ -1,9 +1,243 @@
-local drag,ds,sp=false,nil,nil;TB.InputBegan:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=true;ds=i.Position;sp=M.Position end end);UIS.InputChanged:Connect(function(i)if drag and(i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch)then local z=i.Position-ds;M.Position=UDim2.new(sp.X.Scale,sp.X.Offset+z.X,sp.Y.Scale,sp.Y.Offset+z.Y)end end);UIS.InputEnded:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false end end);x.MouseButton1Click:Connect(function()G:Destroy()end)
+    local function add(name, instance)
+        local cfg = CONFIG.ROOTS[name]
+        if cfg and instance then
+            roots[#roots + 1] = { name = name, instance = instance, config = cfg }
+        elseif cfg then
+            state.warnings[#state.warnings + 1] = name .. " unavailable"
+        end
+    end
 
-local running=false;local report=nil;local lines,chars,trunc,warn,int,done,st={},0,false,{},{},0,{}
-local function reset()lines={};chars=0;trunc=false;warn={};int={};done=0;report=nil;st={total=0,RemoteEvent=0,RemoteFunction=0,ModuleScript=0,LocalScript=0,Script=0,Tool=0,ProximityPrompt=0,ClickDetector=0,GuiObject=0,ValueBase=0,Attributes=0,TaggedObjects=0}end
-local function add(s)if trunc then return end;s=tostring(s or"");if chars+#s+1>C.MAX then trunc=true;lines[#lines+1]="[REPORT TRUNCATED: MAX_REPORT_CHARS reached]";return end;lines[#lines+1]=s;chars+=#s+1 end
-local function status(s,p)S.Text=s;if p then pf.Size=UDim2.fromScale(math.clamp(p,0,1),1)end end
-local function props(i)local p={};if i:IsA("ValueBase")then p.Value=val(saf(function()return i.Value end))end;if i:IsA("Tool")then p.RequiresHandle=tostring(saf(function()return i.RequiresHandle end,"?"));p.ToolTip=san(saf(function()return i.ToolTip end,""))end;if i:IsA("ProximityPrompt")then p.ActionText=san(saf(function()return i.ActionText end,""));p.ObjectText=san(saf(function()return i.ObjectText end,""));p.MaxActivationDistance=tostring(saf(function()return i.MaxActivationDistance end,"?"))end;if i:IsA("ClickDetector")then p.MaxActivationDistance=tostring(saf(function()return i.MaxActivationDistance end,"?"))end;if i:IsA("ScreenGui")then p.Enabled=tostring(saf(function()return i.Enabled end,"?"))end;if i:IsA("GuiObject")then p.Visible=tostring(saf(function()return i.Visible end,"?"))end;if i:IsA("TextLabel")or i:IsA("TextButton")or i:IsA("TextBox")then p.Text=san(saf(function()return i.Text end,""))end;if i:IsA("Humanoid")then p.Health=tostring(saf(function()return i.Health end,"?"));p.MaxHealth=tostring(saf(function()return i.MaxHealth end,"?"))end;return p end
-local function analyse(i)local a,g=attrs(i),tags(i);st.total+=1;for _,n in ipairs({"RemoteEvent","RemoteFunction","ModuleScript","LocalScript","Script","Tool","ProximityPrompt","ClickDetector","GuiObject","ValueBase"})do if i:IsA(n)then st[n]+=1 end end;if next(a)then st.Attributes+=1 end;if #g>0 then st.TaggedObjects+=1 end;local q=i:IsA("RemoteEvent")or i:IsA("RemoteFunction")or i:IsA("ModuleScript")or i:IsA("LocalScript")or i:IsA("Script")or i:IsA("Tool")or i:IsA("ProximityPrompt")or i:IsA("ClickDetector")or i:IsA("ValueBase")or i:IsA("ScreenGui")or i:IsA("TextButton")or i:IsA("TextLabel")or i:IsA("TextBox")or i:IsA("Humanoid")or next(a)or#g>0;if q then int[#int+1]={class=i.ClassName,name=i.Name,path=full(i),a=a,g=g,p=props(i)}end end
-local function skip(i)return i==G or saf(function()return i:IsDescendantOf(G)end,false)end
+    add("ReplicatedStorage", ReplicatedStorage)
+    add("ReplicatedFirst", ReplicatedFirst)
+    add("Workspace", Workspace)
+
+    for _, serviceName in ipairs({ "StarterGui", "StarterPlayer", "StarterPack", "Lighting", "SoundService", "Teams" }) do
+        add(serviceName, safeCall(function()
+            return game:GetService(serviceName)
+        end, nil))
+    end
+
+    add("Character", LocalPlayer.Character)
+    add("Backpack", LocalPlayer:FindFirstChildOfClass("Backpack"))
+    add("PlayerGui", LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+    add("PlayerScripts", LocalPlayer:FindFirstChild("PlayerScripts"))
+
+    return roots
+end
+
+local function scanRoot(rootInfo, rootIndex, rootCount)
+    local name = rootInfo.name
+    local root = rootInfo.instance
+    local cfg = rootInfo.config
+
+    terminalAdd("[SCAN] " .. name)
+    setStatus("Escaneando " .. name .. "...", (rootIndex - 1) / rootCount)
+
+    local queue = { { instance = root, depth = 0 } }
+    local head = 1
+    local scanned = 0
+    local truncated = false
+    local rootClasses = {}
+
+    while head <= #queue do
+        if scanned >= cfg.maxObjects then
+            truncated = true
+            break
+        end
+
+        local current = queue[head]
+        head = head + 1
+
+        local instance = current.instance
+        local depth = current.depth
+
+        if not scannerGuiOwns(instance) then
+            scanned = scanned + 1
+            rootClasses[instance.ClassName] = (rootClasses[instance.ClassName] or 0) + 1
+            inspectInstance(instance)
+
+            if depth < cfg.maxDepth then
+                local children = safeCall(function()
+                    return instance:GetChildren()
+                end, {})
+
+                local limit = math.min(#children, CONFIG.MAX_CHILDREN_PER_NODE)
+                if #children > CONFIG.MAX_CHILDREN_PER_NODE then
+                    state.warnings[#state.warnings + 1] = string.format(
+                        "%s: child limit reached at %s (%d -> %d)",
+                        name,
+                        fullName(instance),
+                        #children,
+                        CONFIG.MAX_CHILDREN_PER_NODE
+                    )
+                end
+
+                for index = 1, limit do
+                    if scanned + (#queue - head + 1) >= cfg.maxObjects then
+                        truncated = true
+                        break
+                    end
+                    local child = children[index]
+                    if not scannerGuiOwns(child) then
+                        queue[#queue + 1] = { instance = child, depth = depth + 1 }
+                    end
+                end
+            end
+        end
+
+        if state.total % CONFIG.YIELD_EVERY == 0 then
+            setStatus("Escaneando " .. name .. " • " .. tostring(scanned) .. " objetos", (rootIndex - 1) / rootCount)
+            task.wait()
+        end
+    end
+
+    state.roots[#state.roots + 1] = {
+        name = name,
+        path = fullName(root),
+        scanned = scanned,
+        truncated = truncated,
+        classes = rootClasses,
+    }
+
+    if truncated then
+        state.warnings[#state.warnings + 1] = name .. " reached configured scan limit"
+        terminalAdd("[WARN] " .. name .. " truncado en " .. tostring(scanned) .. " objetos")
+    else
+        terminalAdd("[OK] " .. name .. " • " .. tostring(scanned) .. " objetos")
+    end
+
+    setStatus("Completado " .. name, rootIndex / rootCount)
+end
+
+local function appendMetadataLines(lines, record)
+    local attrText = formatAttributes(record.attributes or {})
+    local tagText = formatTags(record.tags or {})
+    if attrText then
+        lines[#lines + 1] = "Attributes: " .. attrText
+    end
+    if tagText then
+        lines[#lines + 1] = "Tags: " .. tagText
+    end
+end
+
+local function buildSummary()
+    local lines = {}
+    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.2 - SUMMARY"
+    lines[#lines + 1] = "Version: " .. VERSION
+    lines[#lines + 1] = "PlaceId: " .. tostring(game.PlaceId)
+    lines[#lines + 1] = "GameId: " .. tostring(game.GameId)
+    lines[#lines + 1] = "PlaceVersion: " .. tostring(safeCall(function() return game.PlaceVersion end, "unavailable"))
+    lines[#lines + 1] = "CreatorId: " .. tostring(safeCall(function() return game.CreatorId end, "unavailable"))
+    lines[#lines + 1] = "Workspace.StreamingEnabled: " .. tostring(safeCall(function() return Workspace.StreamingEnabled end, "unavailable"))
+    lines[#lines + 1] = "LocalPlayer: " .. LocalPlayer.Name .. " (" .. tostring(LocalPlayer.UserId) .. ")"
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[COUNTS]"
+    lines[#lines + 1] = "Objects scanned: " .. tostring(state.total)
+    lines[#lines + 1] = "RemoteEvents: " .. tostring(state.classCounts.RemoteEvent or 0)
+    lines[#lines + 1] = "RemoteFunctions: " .. tostring(state.classCounts.RemoteFunction or 0)
+    lines[#lines + 1] = "ModuleScripts: " .. tostring(state.classCounts.ModuleScript or 0)
+    lines[#lines + 1] = "LocalScripts: " .. tostring(state.classCounts.LocalScript or 0)
+    lines[#lines + 1] = "Scripts: " .. tostring(state.classCounts.Script or 0)
+    lines[#lines + 1] = "Tools: " .. tostring(state.classCounts.Tool or 0)
+    lines[#lines + 1] = "ProximityPrompts: " .. tostring(state.classCounts.ProximityPrompt or 0)
+    lines[#lines + 1] = "ClickDetectors: " .. tostring(state.classCounts.ClickDetector or 0)
+    lines[#lines + 1] = "Folders: " .. tostring(state.classCounts.Folder or 0)
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[ROOTS]"
+    for _, root in ipairs(state.roots) do
+        lines[#lines + 1] = string.format("%s: %d objects%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[PRIORITY NAME HITS]"
+    for index, item in ipairs(state.priority) do
+        lines[#lines + 1] = string.format("%d. [%s] %s", index, item.className, item.path)
+    end
+    if #state.priority == 0 then
+        lines[#lines + 1] = "None"
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[WARNINGS]"
+    if #state.warnings == 0 then
+        lines[#lines + 1] = "None"
+    else
+        for _, warning in ipairs(state.warnings) do
+            lines[#lines + 1] = "- " .. warning
+        end
+    end
+    for key, hit in pairs(state.limits) do
+        if hit then
+            lines[#lines + 1] = "- Report category limit reached: " .. key
+        end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[LIMITATIONS]"
+    lines[#lines + 1] = "Only client-visible/replicated information is included."
+    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, and no scripts decompiled."
+    return table.concat(lines, "\n")
+end
+
+local function buildRemotes()
+    local lines = { "ROBLOX CLIENT SCANNER V1.2 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
+    table.sort(state.remotes, function(a, b) return a.path < b.path end)
+    for index, item in ipairs(state.remotes) do
+        lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
+        lines[#lines + 1] = "Name: " .. sanitize(item.name)
+        lines[#lines + 1] = "Path: " .. item.path
+        lines[#lines + 1] = "Parent: " .. item.parent
+        appendMetadataLines(lines, item)
+        lines[#lines + 1] = ""
+    end
+    return table.concat(lines, "\n")
+end
+
+local function buildModules()
+    local lines = { "ROBLOX CLIENT SCANNER V1.2 - MODULES", "Total: " .. tostring(#state.modules), "" }
+    table.sort(state.modules, function(a, b) return a.path < b.path end)
+    for index, item in ipairs(state.modules) do
+        lines[#lines + 1] = string.format("#%d [ModuleScript]", index)
+        lines[#lines + 1] = "Path: " .. item.path
+        appendMetadataLines(lines, item)
+        lines[#lines + 1] = ""
+    end
+    return table.concat(lines, "\n")
+end
+
+local function buildScripts()
+    local lines = { "ROBLOX CLIENT SCANNER V1.2 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
+    table.sort(state.scripts, function(a, b) return a.path < b.path end)
+    for index, item in ipairs(state.scripts) do
+        lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
+        lines[#lines + 1] = "Path: " .. item.path
+        lines[#lines + 1] = "Enabled: " .. tostring(item.enabled)
+        appendMetadataLines(lines, item)
+        lines[#lines + 1] = ""
+    end
+    return table.concat(lines, "\n")
+end
+
+local function formatClassCounts(classCounts)
+    local parts = {}
+    for _, className in ipairs(sortedKeys(classCounts)) do
+        parts[#parts + 1] = className .. "=" .. tostring(classCounts[className])
+    end
+    return table.concat(parts, ", ")
+end
+
+local function buildStructure()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.2 - STRUCTURE / METADATA",
+        "Folders/configurations are listed by full path; physical Models/Parts are summarized through counts.",
+        "",
+        "[ROOT CLASS SUMMARIES]",
+    }
+    for _, root in ipairs(state.roots) do
+        lines[#lines + 1] = "ROOT: " .. root.name
+        lines[#lines + 1] = "Path: " .. root.path
+        lines[#lines + 1] = "Objects: " .. tostring(root.scanned)
+        lines[#lines + 1] = "Classes: " .. formatClassCounts(root.classes)
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[FOLDERS / CONFIGURATIONS]"
+    table.sort(state.structure, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.structure) do
