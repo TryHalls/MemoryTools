@@ -1,7 +1,7 @@
 -- Roblox Client Scanner V1.5 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
 local VERSION = "1.5.0"
-local ORDER = {1, 6, 2, 3, 4, 5}
+local ORDER = {1, 2, 3, 4, 5}
 
 local function showError(message)
     local Players = game:GetService("Players")
