@@ -1,83 +1,61 @@
-                out[#out + 1] = rendered
-                if #out >= CONFIG.MAX_INTERESTING_LINES then break end
-            end
+end
+
+local function extractFocusContexts(lines)
+    local out, covered = {}, {}
+    for i,line in ipairs(lines) do
+        local terms = focusMatches(line)
+        if #terms > 0 and not covered[i] then
+            local context, first, last = contextBlock(lines, i)
+            out[#out+1] = {
+                line=i,
+                terms=terms,
+                context=context,
+            }
+            for n=first,last do covered[n] = true end
+            if #out >= CONFIG.MAX_CONTEXTS_PER_TARGET then break end
         end
     end
     return out
 end
 
-local function extractCallSites(lines)
-    local calls = {}
-    for lineNumber, line in ipairs(lines) do
-        for _, token in ipairs(NETWORK_TOKENS) do
-            if string.find(line, token, 1, true) then
-                local receiver = callReceiver(line, token)
-                local context = contextBlock(lines, lineNumber)
-                local literals = extractQuotedLiterals(context)
-                calls[#calls + 1] = {
-                    token = token,
-                    line = lineNumber,
-                    receiver = receiver,
-                    aliasOrigin = findAliasOrigin(lines, lineNumber, receiver),
-                    literals = literals,
-                    context = context,
-                }
-                if #calls >= CONFIG.MAX_CALLS_PER_SCRIPT then
-                    return calls
-                end
-            end
-        end
-    end
-    return calls
-end
-
 local function analyseTarget(target)
-    local record = target.record
-    local ok, sourceOrError = pcall(function() return decompile(record.instance) end)
-    if not ok or type(sourceOrError) ~= "string" or sourceOrError == "" then
-        state.source.failures[#state.source.failures + 1] = target.label .. " :: " .. sanitize(sourceOrError or "no source")
+    local ok, source = pcall(function() return decompile(target.record.instance) end)
+    if not ok or type(source) ~= "string" or source == "" then
+        state.source.failures[#state.source.failures+1] = target.label .. " :: " .. sanitize(source or "no source")
         return nil
     end
-    local source = sourceOrError
     state.source.sourceChars = state.source.sourceChars + #source
     local lines = splitLines(source)
-    local requires = extractRequireLines(lines)
-    local calls = extractCallSites(lines)
-    local interesting = extractInterestingLines(lines)
-    state.source.totalRequires = state.source.totalRequires + #requires
-    state.source.totalCalls = state.source.totalCalls + #calls
-    if target.label == "Networking" or target.label == "Remotes" then
-        state.source.coreSource[target.label] = source
-    end
+    local contexts = extractFocusContexts(lines)
+    state.source.contexts = state.source.contexts + #contexts
     return {
-        label = target.label,
-        className = record.className,
-        path = record.path,
-        sourceChars = #source,
-        lineCount = #lines,
-        requires = requires,
-        calls = calls,
-        interesting = interesting,
+        label=target.label,
+        path=target.record.path,
+        className=target.record.className,
+        chars=#source,
+        lines=#lines,
+        requires=extractRequires(lines),
+        contexts=contexts,
     }
 end
 
-local function runNetworkSourceAnalysis()
-    state.source = emptySourceState()
+local function runSource()
+    state.source = emptySource()
     state.source.attempted = true
     if type(decompile) ~= "function" then
-        state.source.failures[#state.source.failures + 1] = "decompile() unavailable"
-        return false, "decompile() no está disponible"
+        state.source.failures[#state.source.failures+1] = "decompile() unavailable"
+        return false, "decompile() no disponible"
     end
     local targets = selectTargets()
-    terminalSet("[NETWORK SOURCE] V1.5\n[INFO] Solo análisis estático de módulos objetivo. No require(), no remotes, no getconnections().")
-    for index, target in ipairs(targets) do
-        setStatus(string.format("NETWORK SOURCE %d/%d • %s", index, #targets, target.label), #targets > 0 and (index - 1) / #targets or 0)
+    terminalSet("[FINAL SOURCE] V1.6\n[INFO] Decompilando solo targets de Auto Steal + Player.")
+    for index,target in ipairs(targets) do
+        setStatus(string.format("SOURCE %d/%d • %s", index, #targets, target.label), #targets > 0 and (index-1)/#targets or 0)
         terminalAdd(string.format("[SOURCE] %d/%d %s", index, #targets, target.record.path))
         local result = analyseTarget(target)
-        if result then state.source.results[#state.source.results + 1] = result end
+        if result then state.source.results[#state.source.results+1] = result end
         task.wait()
     end
-    setStatus("NETWORK SOURCE completado", 1)
+    setStatus("FINAL SOURCE completado", 1)
     return true
 end
 
@@ -85,132 +63,108 @@ end
 
 local function buildSummary()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.5 - SUMMARY",
+        "ROBLOX CLIENT SCANNER V1.6 - FINAL SUMMARY",
         "Version: " .. VERSION,
         "PlaceId: " .. tostring(game.PlaceId),
         "GameId: " .. tostring(game.GameId),
         "PlaceVersion: " .. tostring(safeCall(function() return game.PlaceVersion end, "unavailable")),
         "Workspace.StreamingEnabled: " .. tostring(safeCall(function() return Workspace.StreamingEnabled end, "unavailable")),
-        "LocalPlayer: " .. LocalPlayer.Name .. " (" .. tostring(LocalPlayer.UserId) .. ")",
         "",
-        "[COUNTS]",
+        "[SCAN]",
         "Objects scanned: " .. tostring(state.total),
-        "RemoteEvents: " .. tostring(state.classCounts.RemoteEvent or 0),
-        "RemoteFunctions: " .. tostring(state.classCounts.RemoteFunction or 0),
-        "ModuleScripts: " .. tostring(state.classCounts.ModuleScript or 0),
-        "LocalScripts: " .. tostring(state.classCounts.LocalScript or 0),
-        "",
-        "[NETWORK SOURCE]",
-        "Attempted: " .. tostring(state.source.attempted),
+        "Runtime hits: " .. tostring(#state.runtimeHits),
         "Targets found: " .. tostring(#state.source.targets),
-        "Targets missing: " .. tostring(#state.source.missingTargets),
-        "Results: " .. tostring(#state.source.results),
-        "Call-sites extracted: " .. tostring(state.source.totalCalls),
-        "Require lines extracted: " .. tostring(state.source.totalRequires),
-        "Source chars inspected: " .. tostring(state.source.sourceChars),
+        "Targets missing: " .. tostring(#state.source.missing),
+        "Source results: " .. tostring(#state.source.results),
+        "Focus contexts: " .. tostring(state.source.contexts),
+        "Source chars: " .. tostring(state.source.sourceChars),
         "",
-        "[CAPABILITIES DETECTED]",
-        "decompile: " .. tostring(state.capabilities.decompile),
-        "getconnections: " .. tostring(state.capabilities.getconnections),
-        "getgc: " .. tostring(state.capabilities.getgc),
-        "getsenv: " .. tostring(state.capabilities.getsenv),
-        "",
-        "[ROOTS]",
+        "[HUMANOID SNAPSHOT]",
     }
+    for _, key in ipairs({"characterPath","humanoidPath","rootPath","WalkSpeed","JumpPower","JumpHeight","UseJumpPower","HipHeight","AutoRotate","Gravity","RootCFrame"}) do
+        lines[#lines+1] = key .. ": " .. tostring(state.humanoid[key])
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "[ROOTS]"
     for _, root in ipairs(state.roots) do
-        lines[#lines + 1] = string.format("%s: %d%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
+        lines[#lines+1] = string.format("%s: %d%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
     end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[WARNINGS]"
-    if #state.warnings == 0 then lines[#lines + 1] = "None" else
-        for _, warning in ipairs(state.warnings) do lines[#lines + 1] = "- " .. warning end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "[WARNINGS]"
+    if #state.warnings == 0 then lines[#lines+1] = "None" else
+        for _, warning in ipairs(state.warnings) do lines[#lines+1] = "- " .. warning end
     end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[LIMITATIONS]"
-    lines[#lines + 1] = "Client-visible information only."
-    lines[#lines + 1] = "No remote was invoked, no ModuleScript was required, and no connection was inspected."
-    lines[#lines + 1] = "Decompiler output is reconstructed and may differ from original Studio source."
-    return table.concat(lines, "\n")
+    lines[#lines+1] = ""
+    lines[#lines+1] = "[LIMITATIONS]"
+    lines[#lines+1] = "Client-visible information only."
+    lines[#lines+1] = "No remote was invoked and no ModuleScript was required."
+    lines[#lines+1] = "Decompiler output is reconstructed and may differ from original Studio source."
+    return table.concat(lines,"\n")
 end
 
-local function buildTargetsReport()
+local function buildRuntimeMap()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.5 - TARGETS",
-        "Targeted modules/scripts selected from V1.4 evidence.",
+        "ROBLOX CLIENT SCANNER V1.6 - RUNTIME MAP",
+        "Workspace candidates related to eggs/slots/nests/plots/bases/spawns.",
+        "OWNER_MATCH means the visible path/attributes contain the local player identity; it is evidence, not server ownership proof.",
         "",
-        "[FOUND]",
+        "Total hits: " .. tostring(#state.runtimeHits),
+        "",
     }
-    for index, target in ipairs(state.source.targets) do
-        lines[#lines + 1] = string.format("#%d %s", index, target.label)
-        lines[#lines + 1] = "Path: " .. target.record.path
-        lines[#lines + 1] = "Class: " .. target.record.className
-        local meta = formatMetadata(target.record.instance)
-        if meta ~= "" then lines[#lines + 1] = "Metadata: " .. meta end
+    table.sort(state.runtimeHits, function(a,b)
+        if a.ownerMatch ~= b.ownerMatch then return a.ownerMatch end
+        return a.path < b.path
+    end)
+    for index,item in ipairs(state.runtimeHits) do
+        lines[#lines+1] = string.format("#%d [%s]%s", index, item.className, item.ownerMatch and " [OWNER_MATCH]" or "")
+        lines[#lines+1] = "Path: " .. item.path
+        lines[#lines+1] = "Parent: " .. item.parent
+        if item.attrs ~= "" then lines[#lines+1] = "Attributes: " .. item.attrs end
+        if item.tags ~= "" then lines[#lines+1] = "Tags: " .. item.tags end
+        if item.transform ~= "" then lines[#lines+1] = "Transform: " .. item.transform end
+        if item.children ~= "" then lines[#lines+1] = "Children: " .. item.children end
+        lines[#lines+1] = ""
     end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[MISSING]"
-    if #state.source.missingTargets == 0 then lines[#lines + 1] = "None" else
-        for _, missing in ipairs(state.source.missingTargets) do lines[#lines + 1] = "- " .. missing end
-    end
-    return table.concat(lines, "\n")
+    return table.concat(lines,"\n")
 end
 
-local function buildNetworkMap()
+local function buildSourceMap()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.5 - NETWORK MAP",
-        "Static snippets from selected decompiled client-visible code.",
-        "No module was required and no remote was invoked.",
-        "AliasOrigin is a backwards textual assignment search, not proof of runtime identity.",
+        "ROBLOX CLIENT SCANNER V1.6 - FINAL SOURCE MAP",
+        "Targeted static excerpts for Auto Steal + Player implementation.",
+        "No remote was invoked and no ModuleScript was required.",
         "",
         "[STATS]",
         "Targets: " .. tostring(#state.source.targets),
         "Results: " .. tostring(#state.source.results),
-        "Call-sites: " .. tostring(state.source.totalCalls),
-        "Require lines: " .. tostring(state.source.totalRequires),
+        "Contexts: " .. tostring(state.source.contexts),
         "Source chars: " .. tostring(state.source.sourceChars),
         "",
     }
-    for index, result in ipairs(state.source.results) do
-        lines[#lines + 1] = string.format("========== #%d %s ==========", index, result.label)
-        lines[#lines + 1] = "Path: " .. result.path
-        lines[#lines + 1] = string.format("Class: %s | SourceChars: %d | Lines: %d", result.className, result.sourceChars, result.lineCount)
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "[REQUIRES]"
-        if #result.requires == 0 then lines[#lines + 1] = "None" else
-            for _, entry in ipairs(result.requires) do lines[#lines + 1] = entry end
+    for index,result in ipairs(state.source.results) do
+        lines[#lines+1] = string.format("========== #%d %s ==========", index, result.label)
+        lines[#lines+1] = "Path: " .. result.path
+        lines[#lines+1] = string.format("Class: %s | Chars: %d | Lines: %d", result.className, result.chars, result.lines)
+        lines[#lines+1] = ""
+        lines[#lines+1] = "[REQUIRES]"
+        if #result.requires == 0 then lines[#lines+1] = "None" else
+            for _,entry in ipairs(result.requires) do lines[#lines+1] = entry end
         end
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "[NETWORK CALL-SITES]"
-        if #result.calls == 0 then lines[#lines + 1] = "None" else
-            for callIndex, call in ipairs(result.calls) do
-                lines[#lines + 1] = string.format("CALL #%d %s @ L%d", callIndex, call.token, call.line)
-                lines[#lines + 1] = "Receiver: " .. tostring(call.receiver or "unresolved")
-                lines[#lines + 1] = "AliasOrigin: " .. tostring(call.aliasOrigin or "not found in lookback")
-                if #call.literals > 0 then
-                    lines[#lines + 1] = "NearbyLiterals: " .. table.concat(call.literals, " | ")
-                end
-                lines[#lines + 1] = "Context: " .. call.context
+        lines[#lines+1] = ""
+        lines[#lines+1] = "[FOCUS CONTEXTS]"
+        if #result.contexts == 0 then lines[#lines+1] = "None" else
+            for cIndex,context in ipairs(result.contexts) do
+                lines[#lines+1] = string.format("CONTEXT #%d @ L%d | Terms: %s", cIndex, context.line, table.concat(context.terms,", "))
+                lines[#lines+1] = context.context
+                lines[#lines+1] = ""
             end
         end
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "[INTERESTING LINES]"
-        if #result.interesting == 0 then lines[#lines + 1] = "None" else
-            for _, entry in ipairs(result.interesting) do lines[#lines + 1] = entry end
-        end
-        lines[#lines + 1] = ""
     end
-    lines[#lines + 1] = "[FAILURES]"
-    if #state.source.failures == 0 then lines[#lines + 1] = "None" else
-        for _, failure in ipairs(state.source.failures) do lines[#lines + 1] = "- " .. failure end
+    lines[#lines+1] = "[MISSING TARGETS]"
+    if #state.source.missing == 0 then lines[#lines+1] = "None" else
+        for _,entry in ipairs(state.source.missing) do lines[#lines+1] = "- " .. entry end
     end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[MISSING TARGETS]"
-    if #state.source.missingTargets == 0 then lines[#lines + 1] = "None" else
-        for _, missing in ipairs(state.source.missingTargets) do lines[#lines + 1] = "- " .. missing end
-    end
-    return table.concat(lines, "\n")
-end
-
-local function buildCoreSource()
-    local lines = {
-        "ROBLOX CLIENT SCANNER V1.5 - CORE SOURCE",
+    lines[#lines+1] = ""
+    lines[#lines+1] = "[DECOMPILE FAILURES]"
+    if #state.source.failures == 0 then lines[#lines+1] = "None" else
+        for _,entry in ipairs(state.source.failures) do lines[#lines+1] = "- " .. entry end
