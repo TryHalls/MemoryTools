@@ -1,13 +1,290 @@
-local lh=Instance.new("TextLabel",L);lh.BackgroundTransparency=1;lh.Position=UDim2.new(0,12,0,12);lh.Size=UDim2.new(1,-24,0,24);lh.Font=Enum.Font.GothamBold;lh.Text="CONTROLES";lh.TextColor3=Color3.new(.9,.91,.94);lh.TextSize=14;lh.TextXAlignment=Enum.TextXAlignment.Left
-local d=Instance.new("TextLabel",L);d.BackgroundTransparency=1;d.Position=UDim2.new(0,12,0,43);d.Size=UDim2.new(1,-24,0,82);d.Font=Enum.Font.Gotham;d.Text="Escanea la arquitectura visible desde este cliente. No dispara remotes, no requiere módulos y no modifica el juego.";d.TextColor3=Color3.fromRGB(162,169,181);d.TextSize=12;d.TextWrapped=true;d.TextXAlignment=Enum.TextXAlignment.Left;d.TextYAlignment=Enum.TextYAlignment.Top
-local function btn(text,y)local b=Instance.new("TextButton",L);b.Position=UDim2.new(0,12,0,y);b.Size=UDim2.new(1,-24,0,44);b.BackgroundColor3=Color3.fromRGB(55,92,168);b.BorderSizePixel=0;b.Font=Enum.Font.GothamBold;b.Text=text;b.TextColor3=Color3.new(.96,.97,.99);b.TextSize=13;Instance.new("UICorner",b).CornerRadius=UDim.new(0,8);return b end
-local B,K=btn("INICIAR SCAN",138),btn("COPIAR RESULTADO",190);K.BackgroundColor3=Color3.fromRGB(52,56,66);K.TextColor3=Color3.fromRGB(122,128,139);K.AutoButtonColor=false
-local sh=Instance.new("TextLabel",L);sh.BackgroundTransparency=1;sh.Position=UDim2.new(0,12,0,250);sh.Size=UDim2.new(1,-24,0,20);sh.Font=Enum.Font.GothamBold;sh.Text="ESTADO";sh.TextColor3=Color3.new(.9,.91,.94);sh.TextSize=12;sh.TextXAlignment=Enum.TextXAlignment.Left
-local S=Instance.new("TextLabel",L);S.BackgroundTransparency=1;S.Position=UDim2.new(0,12,0,275);S.Size=UDim2.new(1,-24,0,52);S.Font=Enum.Font.Gotham;S.Text="Listo para iniciar.";S.TextColor3=Color3.fromRGB(157,164,176);S.TextSize=12;S.TextWrapped=true;S.TextXAlignment=Enum.TextXAlignment.Left;S.TextYAlignment=Enum.TextYAlignment.Top
-local pb=Instance.new("Frame",L);pb.Position=UDim2.new(0,12,0,336);pb.Size=UDim2.new(1,-24,0,8);pb.BackgroundColor3=Color3.fromRGB(42,46,55);pb.BorderSizePixel=0;Instance.new("UICorner",pb).CornerRadius=UDim.new(1,0)
-local pf=Instance.new("Frame",pb);pf.Size=UDim2.fromScale(0,1);pf.BackgroundColor3=Color3.fromRGB(91,139,231);pf.BorderSizePixel=0;Instance.new("UICorner",pf).CornerRadius=UDim.new(1,0)
-local inf=Instance.new("TextLabel",L);inf.BackgroundTransparency=1;inf.Position=UDim2.new(0,12,0,363);inf.Size=UDim2.new(1,-24,0,78);inf.Font=Enum.Font.Gotham;inf.Text="Al terminar usa COPIAR RESULTADO. Todo el reporte permanece dentro de esta GUI.";inf.TextColor3=Color3.fromRGB(121,127,139);inf.TextSize=11;inf.TextWrapped=true;inf.TextXAlignment=Enum.TextXAlignment.Left
-local rh=Instance.new("TextLabel",R);rh.BackgroundColor3=Color3.fromRGB(21,24,29);rh.BorderSizePixel=0;rh.Size=UDim2.new(1,0,0,34);rh.Font=Enum.Font.Code;rh.Text="  TERMINAL INTERNA";rh.TextColor3=Color3.fromRGB(171,222,160);rh.TextSize=13;rh.TextXAlignment=Enum.TextXAlignment.Left
-local SF=Instance.new("ScrollingFrame",R);SF.Position=UDim2.new(0,8,0,42);SF.Size=UDim2.new(1,-16,1,-50);SF.BackgroundTransparency=1;SF.BorderSizePixel=0;SF.ScrollBarThickness=5;SF.AutomaticCanvasSize=Enum.AutomaticSize.Y;SF.CanvasSize=UDim2.new()
-local T=Instance.new("TextLabel",SF);T.Size=UDim2.new(1,-8,0,0);T.AutomaticSize=Enum.AutomaticSize.Y;T.BackgroundTransparency=1;T.Font=Enum.Font.Code;T.Text="[READY] Scanner cargado.\nPulsa INICIAR SCAN para comenzar.";T.TextColor3=Color3.fromRGB(200,205,214);T.TextSize=12;T.TextWrapped=true;T.TextXAlignment=Enum.TextXAlignment.Left;T.TextYAlignment=Enum.TextYAlignment.Top
-local function term(s)T.Text=T.Text.."\n"..tostring(s);task.defer(function()SF.CanvasPosition=Vector2.new(0,math.max(0,SF.AbsoluteCanvasSize.Y))end)end
+local Status = makeLabel(Left, "Listo para iniciar.", 562, 54, false)
+
+local ProgressBack = Instance.new("Frame", Left)
+ProgressBack.Position = UDim2.new(0, 12, 0, 624)
+ProgressBack.Size = UDim2.new(1, -24, 0, 8)
+ProgressBack.BackgroundColor3 = Color3.fromRGB(42, 46, 55)
+ProgressBack.BorderSizePixel = 0
+Instance.new("UICorner", ProgressBack).CornerRadius = UDim.new(1, 0)
+
+local ProgressFill = Instance.new("Frame", ProgressBack)
+ProgressFill.Size = UDim2.fromScale(0, 1)
+ProgressFill.BackgroundColor3 = Color3.fromRGB(91, 139, 231)
+ProgressFill.BorderSizePixel = 0
+Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(1, 0)
+
+makeLabel(Left, "Si una categoría supera el límite del portapapeles, se divide automáticamente. Usa SIGUIENTE PARTE para avanzar.", 650, 70, false)
+
+local TerminalHeader = Instance.new("TextLabel", Right)
+TerminalHeader.BackgroundColor3 = Color3.fromRGB(21, 24, 29)
+TerminalHeader.BorderSizePixel = 0
+TerminalHeader.Size = UDim2.new(1, 0, 0, 34)
+TerminalHeader.Font = Enum.Font.Code
+TerminalHeader.Text = "  TERMINAL INTERNA"
+TerminalHeader.TextColor3 = Color3.fromRGB(171, 222, 160)
+TerminalHeader.TextSize = 13
+TerminalHeader.TextXAlignment = Enum.TextXAlignment.Left
+
+local TerminalScroll = Instance.new("ScrollingFrame", Right)
+TerminalScroll.Position = UDim2.new(0, 8, 0, 42)
+TerminalScroll.Size = UDim2.new(1, -16, 1, -50)
+TerminalScroll.BackgroundTransparency = 1
+TerminalScroll.BorderSizePixel = 0
+TerminalScroll.ScrollBarThickness = 5
+TerminalScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+TerminalScroll.CanvasSize = UDim2.new()
+
+local Terminal = Instance.new("TextBox", TerminalScroll)
+Terminal.Size = UDim2.new(1, -8, 0, 0)
+Terminal.AutomaticSize = Enum.AutomaticSize.Y
+Terminal.BackgroundTransparency = 1
+Terminal.Font = Enum.Font.Code
+Terminal.MultiLine = true
+Terminal.ClearTextOnFocus = false
+Terminal.Text = "[READY] Scanner V1.2 cargado.\nPulsa INICIAR SCAN para comenzar."
+Terminal.TextColor3 = Color3.fromRGB(200, 205, 214)
+Terminal.TextSize = 12
+Terminal.TextWrapped = true
+Terminal.TextXAlignment = Enum.TextXAlignment.Left
+Terminal.TextYAlignment = Enum.TextYAlignment.Top
+Terminal.TextEditable = false
+
+local function terminalSet(text)
+    Terminal.Text = tostring(text)
+    task.defer(function()
+        TerminalScroll.CanvasPosition = Vector2.new(0, 0)
+    end)
+end
+
+local function terminalAdd(text)
+    Terminal.Text = Terminal.Text .. "\n" .. tostring(text)
+    task.defer(function()
+        TerminalScroll.CanvasPosition = Vector2.new(0, math.max(0, TerminalScroll.AbsoluteCanvasSize.Y))
+    end)
+end
+
+local function setStatus(text, progress)
+    Status.Text = text
+    if progress ~= nil then
+        ProgressFill.Size = UDim2.fromScale(math.clamp(progress, 0, 1), 1)
+    end
+end
+
+-- Drag support for mouse/touch.
+local dragging = false
+local dragStart
+local startPosition
+
+Topbar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPosition = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        Main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+Close.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+end)
+
+-- Scanner state ---------------------------------------------------------------
+
+local running = false
+local reportData = nil
+local activeChunks = nil
+local activeChunkIndex = 1
+local activeExportName = nil
+
+local function emptyState()
+    return {
+        total = 0,
+        roots = {},
+        remotes = {},
+        modules = {},
+        scripts = {},
+        structure = {},
+        metadata = {},
+        values = {},
+        tools = {},
+        interactions = {},
+        gui = {},
+        priority = {},
+        warnings = {},
+        classCounts = {},
+        limits = {
+            structure = false,
+            metadata = false,
+            values = false,
+            gui = false,
+            priority = false,
+        },
+    }
+end
+
+local state = emptyState()
+
+local function scannerGuiOwns(instance)
+    return instance == ScreenGui or safeCall(function()
+        return instance:IsDescendantOf(ScreenGui)
+    end, false)
+end
+
+local function incrementClass(className)
+    state.classCounts[className] = (state.classCounts[className] or 0) + 1
+end
+
+local function addLimited(list, item, limitName, maximum)
+    if #list < maximum then
+        list[#list + 1] = item
+    else
+        state.limits[limitName] = true
+    end
+end
+
+local function makeCommonRecord(instance)
+    return {
+        className = instance.ClassName,
+        name = instance.Name,
+        path = fullName(instance),
+        attributes = getAttributes(instance),
+        tags = getTags(instance),
+    }
+end
+
+local function inspectInstance(instance)
+    state.total = state.total + 1
+    incrementClass(instance.ClassName)
+
+    local attributes = getAttributes(instance)
+    local tags = getTags(instance)
+    local path = fullName(instance)
+
+    if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") then
+        state.remotes[#state.remotes + 1] = {
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+            parent = instance.Parent and fullName(instance.Parent) or "nil",
+            attributes = attributes,
+            tags = tags,
+        }
+    elseif instance:IsA("ModuleScript") then
+        state.modules[#state.modules + 1] = {
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+            attributes = attributes,
+            tags = tags,
+        }
+    elseif instance:IsA("LocalScript") or instance:IsA("Script") then
+        state.scripts[#state.scripts + 1] = {
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+            enabled = safeCall(function()
+                return instance.Enabled
+            end, "unavailable"),
+            attributes = attributes,
+            tags = tags,
+        }
+    end
+
+    if instance:IsA("Folder") or instance:IsA("Configuration") then
+        local children = safeCall(function()
+            return instance:GetChildren()
+        end, {})
+        local childClasses = {}
+        for _, child in ipairs(children) do
+            childClasses[child.ClassName] = (childClasses[child.ClassName] or 0) + 1
+        end
+        addLimited(state.structure, {
+            className = instance.ClassName,
+            path = path,
+            childCount = #children,
+            childClasses = childClasses,
+        }, "structure", CONFIG.MAX_STRUCTURE_ENTRIES)
+    end
+
+    if next(attributes) ~= nil or #tags > 0 then
+        addLimited(state.metadata, {
+            className = instance.ClassName,
+            path = path,
+            attributes = attributes,
+            tags = tags,
+        }, "metadata", CONFIG.MAX_METADATA_ENTRIES)
+    end
+
+    if instance:IsA("ValueBase") then
+        addLimited(state.values, {
+            className = instance.ClassName,
+            path = path,
+            value = safeCall(function()
+                return instance.Value
+            end, "unavailable"),
+        }, "values", CONFIG.MAX_VALUE_ENTRIES)
+    end
+
+    if instance:IsA("Tool") then
+        state.tools[#state.tools + 1] = {
+            path = path,
+            tooltip = safeCall(function() return instance.ToolTip end, ""),
+            requiresHandle = safeCall(function() return instance.RequiresHandle end, "unavailable"),
+            canBeDropped = safeCall(function() return instance.CanBeDropped end, "unavailable"),
+            attributes = attributes,
+            tags = tags,
+        }
+    end
+
+    if instance:IsA("ProximityPrompt") then
+        state.interactions[#state.interactions + 1] = {
+            className = instance.ClassName,
+            path = path,
+            actionText = safeCall(function() return instance.ActionText end, ""),
+            objectText = safeCall(function() return instance.ObjectText end, ""),
+            maxDistance = safeCall(function() return instance.MaxActivationDistance end, "unavailable"),
+            holdDuration = safeCall(function() return instance.HoldDuration end, "unavailable"),
+        }
+    elseif instance:IsA("ClickDetector") then
+        state.interactions[#state.interactions + 1] = {
+            className = instance.ClassName,
+            path = path,
+            maxDistance = safeCall(function() return instance.MaxActivationDistance end, "unavailable"),
+        }
+    end
+
+    if instance:IsA("ScreenGui") or instance:IsA("TextButton") or instance:IsA("ImageButton") or instance:IsA("TextBox") then
+        addLimited(state.gui, {
+            className = instance.ClassName,
+            path = path,
+            text = (instance:IsA("TextButton") or instance:IsA("TextBox")) and safeCall(function() return instance.Text end, "") or nil,
+        }, "gui", CONFIG.MAX_GUI_ENTRIES)
+    end
+
+    if hasPriorityWord(instance) then
+        addLimited(state.priority, {
+            className = instance.ClassName,
+            path = path,
+        }, "priority", CONFIG.MAX_KEYWORD_HITS)
+    end
+end
+
+local function getRoots()
+    local roots = {}
