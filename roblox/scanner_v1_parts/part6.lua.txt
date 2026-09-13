@@ -1,0 +1,440 @@
+-- V1.5 source-trace patch. Loaded after part1 and before scanner state is declared.
+VERSION = "1.5.0"
+Title.Text = "ROBLOX CLIENT SCANNER • V" .. VERSION
+
+local V15Patch = {}
+
+local TRACE_TOKENS = {
+    "FireServer",
+    "InvokeServer",
+    "OnClientEvent",
+    "OnClientInvoke",
+    "OnServerEvent",
+    "OnServerInvoke",
+}
+
+local WRAPPER_PATHS = {
+    ["ReplicatedStorage.Packages.Networking"] = true,
+    ["ReplicatedStorage.Shared.Remotes"] = true,
+    ["ReplicatedStorage.Client.Modules.ReplicatorClient"] = true,
+}
+
+local TRACE_CONFIG = {
+    MAX_CALLSITES_TOTAL = 220,
+    MAX_CALLSITES_PER_SCRIPT = 28,
+    CONTEXT_BEFORE = 4,
+    CONTEXT_AFTER = 4,
+    MAX_CONTEXT_LINE = 360,
+    MAX_STRING_HINTS = 18,
+    MAX_SOURCE_CHARS = 220000,
+    MAX_WRAPPER_SOURCE = 70000,
+}
+
+local function traceClip(text, maximum)
+    text = tostring(text or "")
+    if #text > maximum then
+        return string.sub(text, 1, maximum) .. "...[TRUNCATED]"
+    end
+    return text
+end
+
+local function traceOneLine(text, maximum)
+    text = tostring(text or "")
+    text = text:gsub("\r", "\\r"):gsub("\n", "\\n"):gsub("\t", "\\t")
+    return traceClip(text, maximum or 320)
+end
+
+local function traceSplitLines(source)
+    source = source:gsub("\r\n", "\n"):gsub("\r", "\n")
+    local lines = {}
+    for line in (source .. "\n"):gmatch("(.-)\n") do
+        lines[#lines + 1] = line
+    end
+    return lines
+end
+
+local function traceTokensOnLine(line)
+    local result = {}
+    for _, token in ipairs(TRACE_TOKENS) do
+        if string.find(line, token, 1, true) then
+            result[#result + 1] = token
+        end
+    end
+    return result
+end
+
+local function traceTokenCounts(source)
+    local counts = {}
+    for _, token in ipairs(TRACE_TOKENS) do
+        local count = 0
+        local cursor = 1
+        while true do
+            local position = string.find(source, token, cursor, true)
+            if not position then break end
+            count = count + 1
+            cursor = position + #token
+        end
+        if count > 0 then counts[token] = count end
+    end
+    return counts
+end
+
+local function traceRequireCount(source)
+    local count = 0
+    local cursor = 1
+    while true do
+        local position = string.find(source, "require(", cursor, true)
+        if not position then break end
+        count = count + 1
+        cursor = position + 8
+    end
+    return count
+end
+
+local function traceContext(lines, center)
+    local first = math.max(1, center - TRACE_CONFIG.CONTEXT_BEFORE)
+    local last = math.min(#lines, center + TRACE_CONFIG.CONTEXT_AFTER)
+    local output = {}
+    for index = first, last do
+        local marker = index == center and ">" or " "
+        output[#output + 1] = string.format(
+            "%s %d | %s",
+            marker,
+            index,
+            traceOneLine(lines[index], TRACE_CONFIG.MAX_CONTEXT_LINE)
+        )
+    end
+    return table.concat(output, "\n"), first, last
+end
+
+local function traceStringHints(lines, first, last)
+    local hints = {}
+    local seen = {}
+
+    local function add(value)
+        if value and value ~= "" and #value <= 140 and not seen[value] then
+            seen[value] = true
+            hints[#hints + 1] = value
+        end
+    end
+
+    for index = first, last do
+        local line = lines[index] or ""
+        for value in line:gmatch('"([^"\\\n]-)"') do
+            add(value)
+            if #hints >= TRACE_CONFIG.MAX_STRING_HINTS then return hints end
+        end
+        for value in line:gmatch("'([^'\\\n]-)'") do
+            add(value)
+            if #hints >= TRACE_CONFIG.MAX_STRING_HINTS then return hints end
+        end
+    end
+
+    return hints
+end
+
+local function traceAllowedClass(tokens, className)
+    local wantsEvent = false
+    local wantsFunction = false
+    for _, token in ipairs(tokens) do
+        if token == "FireServer" or token == "OnClientEvent" or token == "OnServerEvent" then
+            wantsEvent = true
+        elseif token == "InvokeServer" or token == "OnClientInvoke" or token == "OnServerInvoke" then
+            wantsFunction = true
+        end
+    end
+    if wantsEvent and not wantsFunction then return className == "RemoteEvent" end
+    if wantsFunction and not wantsEvent then return className == "RemoteFunction" end
+    return true
+end
+
+local function traceBuildRemoteMaps(state)
+    local exact = {}
+    local parts = {}
+
+    for _, remote in ipairs(state.remotes) do
+        local prefix, namespace, action = string.match(remote.name, "^(R[EF])/([^/]+)/(.+)$")
+        if prefix and namespace and action then
+            exact[remote.name] = exact[remote.name] or {}
+            exact[remote.name][#exact[remote.name] + 1] = remote
+
+            local key = namespace .. "\0" .. action
+            parts[key] = parts[key] or {}
+            parts[key][#parts[key] + 1] = remote
+        end
+    end
+
+    return exact, parts
+end
+
+local function traceContextCandidates(hints, tokens, partsMap)
+    local matches = {}
+    local seen = {}
+
+    for i = 1, #hints do
+        for j = 1, #hints do
+            if i ~= j then
+                local list = partsMap[hints[i] .. "\0" .. hints[j]]
+                if list then
+                    for _, remote in ipairs(list) do
+                        if traceAllowedClass(tokens, remote.className) and not seen[remote.path] then
+                            seen[remote.path] = true
+                            matches[#matches + 1] = remote
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(matches, function(a, b) return a.path < b.path end)
+    return matches
+end
+
+local function traceExactMatches(context, tokens, exactMap)
+    local matches = {}
+    local seen = {}
+
+    for remoteName, list in pairs(exactMap) do
+        if string.find(context, remoteName, 1, true) then
+            for _, remote in ipairs(list) do
+                if traceAllowedClass(tokens, remote.className) and not seen[remote.path] then
+                    seen[remote.path] = true
+                    matches[#matches + 1] = remote
+                end
+            end
+        end
+    end
+
+    table.sort(matches, function(a, b) return a.path < b.path end)
+    return matches
+end
+
+local function traceInspectRecord(state, record, source, exactMap, partsMap)
+    local originalChars = #source
+    local truncated = false
+    if #source > TRACE_CONFIG.MAX_SOURCE_CHARS then
+        source = string.sub(source, 1, TRACE_CONFIG.MAX_SOURCE_CHARS)
+        truncated = true
+    end
+
+    state.source.scannedChars = state.source.scannedChars + #source
+    local tokenCounts = traceTokenCounts(source)
+    local result = {
+        className = record.className,
+        path = record.path,
+        sourceChars = originalChars,
+        scannedChars = #source,
+        truncated = truncated,
+        requireCalls = traceRequireCount(source),
+        tokenCounts = tokenCounts,
+        remoteRefs = {},
+    }
+    state.source.results[#state.source.results + 1] = result
+
+    if WRAPPER_PATHS[record.path] then
+        state.source.wrappers[#state.source.wrappers + 1] = {
+            path = record.path,
+            sourceChars = originalChars,
+            truncated = originalChars > TRACE_CONFIG.MAX_WRAPPER_SOURCE,
+            source = traceClip(source, TRACE_CONFIG.MAX_WRAPPER_SOURCE),
+        }
+    end
+
+    if next(tokenCounts) == nil then return end
+
+    local lines = traceSplitLines(source)
+    local perScript = 0
+    for lineNumber, line in ipairs(lines) do
+        local tokens = traceTokensOnLine(line)
+        if #tokens > 0
+            and perScript < TRACE_CONFIG.MAX_CALLSITES_PER_SCRIPT
+            and #state.source.callsites < TRACE_CONFIG.MAX_CALLSITES_TOTAL then
+
+            local context, first, last = traceContext(lines, lineNumber)
+            local hints = traceStringHints(lines, first, last)
+            local exactMatches = traceExactMatches(context, tokens, exactMap)
+            local contextualMatches = traceContextCandidates(hints, tokens, partsMap)
+
+            for _ in ipairs(exactMatches) do
+                state.source.exactRemoteReferences = state.source.exactRemoteReferences + 1
+            end
+            state.source.contextualMatches = state.source.contextualMatches + #contextualMatches
+
+            state.source.callsites[#state.source.callsites + 1] = {
+                className = record.className,
+                path = record.path,
+                line = lineNumber,
+                tokens = tokens,
+                hints = hints,
+                exact = exactMatches,
+                contextual = contextualMatches,
+                context = context,
+            }
+            perScript = perScript + 1
+        end
+    end
+end
+
+function V15Patch.run(state, buildSourceCandidates, setStatusFn, terminalSetFn, terminalAddFn)
+    state.source = {
+        attempted = true,
+        candidates = {},
+        results = {},
+        failures = {},
+        remoteIndex = {},
+        attemptedCount = 0,
+        decompiledCount = 0,
+        exactRemoteReferences = 0,
+        contextualMatches = 0,
+        scannedChars = 0,
+        callsites = {},
+        wrappers = {},
+    }
+
+    if type(decompile) ~= "function" then
+        state.source.failures[#state.source.failures + 1] = {
+            path = "[executor]",
+            error = "decompile() is not available",
+        }
+        return false, "decompile() no está disponible"
+    end
+
+    local candidates = buildSourceCandidates()
+    state.source.candidates = candidates
+    local exactMap, partsMap = traceBuildRemoteMaps(state)
+
+    terminalSetFn("[SOURCE] V1.5\n[INFO] Trazando callsites y wrappers. No se ejecutan remotes, require(), getconnections() ni getgc().")
+
+    for index, record in ipairs(candidates) do
+        state.source.attemptedCount = state.source.attemptedCount + 1
+        setStatusFn(
+            string.format("SOURCE %d/%d • %s", index, #candidates, record.name or record.className),
+            #candidates > 0 and (index - 1) / #candidates or 0
+        )
+        terminalAddFn(string.format("[SOURCE] %d/%d %s", index, #candidates, record.path))
+
+        local ok, sourceOrError = pcall(function() return decompile(record.instance) end)
+        if ok and type(sourceOrError) == "string" and sourceOrError ~= "" then
+            state.source.decompiledCount = state.source.decompiledCount + 1
+            traceInspectRecord(state, record, sourceOrError, exactMap, partsMap)
+        else
+            state.source.failures[#state.source.failures + 1] = {
+                path = record.path,
+                error = traceOneLine(sourceOrError or "decompile returned no source", 240),
+            }
+        end
+        task.wait()
+    end
+
+    table.sort(state.source.results, function(a, b) return a.path < b.path end)
+    table.sort(state.source.callsites, function(a, b)
+        if a.path == b.path then return a.line < b.line end
+        return a.path < b.path
+    end)
+    table.sort(state.source.wrappers, function(a, b) return a.path < b.path end)
+
+    setStatusFn("SOURCE completado", 1)
+    return true
+end
+
+function V15Patch.buildSourceMap(state)
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.5 - SOURCE TRACE",
+        "Read-only decompiler analysis of selected client-visible scripts/modules.",
+        "No remote was invoked, no ModuleScript was required, and no live connections were inspected.",
+        "ContextRemoteCandidates are correlations from exact nearby string literals (namespace + action) against observed Remote instances; they are candidates, not runtime confirmation.",
+        "",
+        "[STATS]",
+        "Candidates selected: " .. tostring(#state.source.candidates),
+        "Decompile attempts: " .. tostring(state.source.attemptedCount),
+        "Decompiler returned source: " .. tostring(state.source.decompiledCount),
+        "Scanned source characters: " .. tostring(state.source.scannedChars),
+        "Callsites captured: " .. tostring(#state.source.callsites),
+        "Wrapper sources captured: " .. tostring(#state.source.wrappers),
+        "Exact full remote references: " .. tostring(state.source.exactRemoteReferences),
+        "Context remote candidates: " .. tostring(state.source.contextualMatches),
+        "Failures: " .. tostring(#state.source.failures),
+        "",
+        "[NETWORK WRAPPER SOURCE]",
+    }
+
+    if #state.source.wrappers == 0 then
+        lines[#lines + 1] = "No wrapper source captured."
+    end
+
+    for index, item in ipairs(state.source.wrappers) do
+        lines[#lines + 1] = string.rep("=", 72)
+        lines[#lines + 1] = string.format("WRAPPER #%d: %s", index, item.path)
+        lines[#lines + 1] = string.format("SourceChars: %d | Truncated: %s", item.sourceChars, tostring(item.truncated))
+        lines[#lines + 1] = string.rep("-", 72)
+        lines[#lines + 1] = item.source
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[NETWORK CALLSITES]"
+    if #state.source.callsites == 0 then
+        lines[#lines + 1] = "None"
+    end
+
+    for index, item in ipairs(state.source.callsites) do
+        lines[#lines + 1] = string.format("#%d [%s] %s", index, item.className, item.path)
+        lines[#lines + 1] = "Line: " .. tostring(item.line)
+        lines[#lines + 1] = "Tokens: " .. table.concat(item.tokens, ", ")
+
+        if #item.hints > 0 then
+            local encoded = {}
+            for _, hint in ipairs(item.hints) do
+                encoded[#encoded + 1] = string.format("%q", hint)
+            end
+            lines[#lines + 1] = "NearbyStringHints: " .. table.concat(encoded, ", ")
+        end
+
+        if #item.exact > 0 then
+            lines[#lines + 1] = "ExactFullRemoteMatches:"
+            for _, remote in ipairs(item.exact) do
+                lines[#lines + 1] = "  = " .. remote.name .. " -> " .. remote.path
+            end
+        end
+
+        if #item.contextual > 0 then
+            lines[#lines + 1] = "ContextRemoteCandidates:"
+            for _, remote in ipairs(item.contextual) do
+                lines[#lines + 1] = "  ? " .. remote.name .. " -> " .. remote.path
+            end
+        end
+
+        lines[#lines + 1] = "Context:"
+        lines[#lines + 1] = item.context
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[DECOMPILE FAILURES]"
+    if #state.source.failures == 0 then
+        lines[#lines + 1] = "None"
+    else
+        for _, failure in ipairs(state.source.failures) do
+            lines[#lines + 1] = "- " .. failure.path .. " :: " .. failure.error
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function V15Patch.compactSourceSummary(state)
+    return table.concat({
+        "[SOURCE V1.5 COMPLETADO]",
+        "",
+        "Candidates: " .. tostring(#state.source.candidates),
+        "Decompiled: " .. tostring(state.source.decompiledCount) .. "/" .. tostring(state.source.attemptedCount),
+        "Source chars: " .. tostring(state.source.scannedChars),
+        "Callsites: " .. tostring(#state.source.callsites),
+        "Wrappers: " .. tostring(#state.source.wrappers),
+        "Exact full remote refs: " .. tostring(state.source.exactRemoteReferences),
+        "Context candidates: " .. tostring(state.source.contextualMatches),
+        "Failures: " .. tostring(#state.source.failures),
+        "",
+        "Usa COPIAR SOURCE MAP y envía todas sus partes.",
+        "El reporte comienza por el source de Networking/Shared.Remotes/ReplicatorClient y luego lista callsites con contexto.",
+    }, "\n")
+end
