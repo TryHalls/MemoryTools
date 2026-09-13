@@ -1,627 +1,217 @@
-    local function add(name, instance)
-        local cfg = CONFIG.ROOTS[name]
-        if cfg and instance then
-            roots[#roots + 1] = { name = name, instance = instance, config = cfg }
-        elseif cfg then
+
+local state = emptyState()
+
+local function scannerGuiOwns(instance)
+    return instance == ScreenGui or safeCall(function() return instance:IsDescendantOf(ScreenGui) end, false)
+end
+
+local function inspectInstance(instance)
+    if state.seen[instance] then return end
+    state.seen[instance] = true
+    state.total = state.total + 1
+    state.classCounts[instance.ClassName] = (state.classCounts[instance.ClassName] or 0) + 1
+    local path = fullName(instance)
+    if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") then
+        state.remotes[#state.remotes + 1] = {
+            instance = instance,
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+        }
+    elseif instance:IsA("ModuleScript") then
+        state.modules[#state.modules + 1] = {
+            instance = instance,
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+        }
+    elseif instance:IsA("LocalScript") or instance:IsA("Script") then
+        state.scripts[#state.scripts + 1] = {
+            instance = instance,
+            className = instance.ClassName,
+            name = instance.Name,
+            path = path,
+        }
+    end
+end
+
+local function getRoots()
+    local roots = {
+        { name = "ReplicatedStorage", instance = ReplicatedStorage, config = CONFIG.ROOTS.ReplicatedStorage },
+        { name = "Workspace", instance = Workspace, config = CONFIG.ROOTS.Workspace },
+    }
+    local dynamic = {
+        Character = LocalPlayer.Character,
+        Backpack = LocalPlayer:FindFirstChildOfClass("Backpack"),
+        PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui"),
+        PlayerScripts = LocalPlayer:FindFirstChild("PlayerScripts"),
+    }
+    for _, name in ipairs({"Character", "Backpack", "PlayerGui", "PlayerScripts"}) do
+        local instance = dynamic[name]
+        if instance then
+            roots[#roots + 1] = { name = name, instance = instance, config = CONFIG.ROOTS[name] }
+        else
             state.warnings[#state.warnings + 1] = name .. " unavailable"
         end
     end
-
-    add("ReplicatedStorage", ReplicatedStorage)
-    add("ReplicatedFirst", ReplicatedFirst)
-    add("Workspace", Workspace)
-
-    for _, serviceName in ipairs({ "Lighting", "SoundService", "Teams" }) do
-        add(serviceName, safeCall(function()
-            return game:GetService(serviceName)
-        end, nil))
-    end
-
-    add("Character", LocalPlayer.Character)
-    add("Backpack", LocalPlayer:FindFirstChildOfClass("Backpack"))
-    add("PlayerGui", LocalPlayer:FindFirstChildOfClass("PlayerGui"))
-    add("PlayerScripts", LocalPlayer:FindFirstChild("PlayerScripts"))
-
     return roots
 end
 
-local function shouldSkipHeavyReplicatedSubtree(rootName, instance)
-    return rootName == "ReplicatedStorage"
-        and instance.Parent == ReplicatedStorage
-        and CONFIG.HEAVY_REPLICATED_TOP_LEVEL[instance.Name] == true
+local function shouldSkipHeavy(rootName, instance)
+    return rootName == "ReplicatedStorage" and instance.Parent == ReplicatedStorage and CONFIG.HEAVY_REPLICATED_TOP_LEVEL[instance.Name] == true
 end
 
-local function scanRoot(rootInfo, rootIndex, rootCount)
-    local name = rootInfo.name
-    local root = rootInfo.instance
-    local cfg = rootInfo.config
-
-    terminalAdd("[SCAN] " .. name)
-    setStatus("Escaneando " .. name .. "...", (rootIndex - 1) / rootCount)
-
-    local queue = { { instance = root, depth = 0 } }
+local function scanRoot(rootInfo, index, count)
+    local queue = {{instance = rootInfo.instance, depth = 0}}
     local head = 1
     local scanned = 0
     local truncated = false
-    local rootClasses = {}
-
+    terminalAdd("[SCAN] " .. rootInfo.name)
     while head <= #queue do
-        if scanned >= cfg.maxObjects then
+        if scanned >= rootInfo.config.maxObjects then
             truncated = true
             break
         end
-
-        local current = queue[head]
+        local node = queue[head]
         head = head + 1
-
-        local instance = current.instance
-        local depth = current.depth
-
+        local instance = node.instance
         if not scannerGuiOwns(instance) then
             scanned = scanned + 1
-            rootClasses[instance.ClassName] = (rootClasses[instance.ClassName] or 0) + 1
             inspectInstance(instance)
-
-            local skipHeavy = shouldSkipHeavyReplicatedSubtree(name, instance)
-            if skipHeavy then
+            if shouldSkipHeavy(rootInfo.name, instance) then
+                state.skippedHeavy[#state.skippedHeavy + 1] = fullName(instance)
+            elseif node.depth < rootInfo.config.maxDepth then
                 local children = safeCall(function() return instance:GetChildren() end, {})
-                state.skippedHeavy[#state.skippedHeavy + 1] = {
-                    path = fullName(instance),
-                    directChildren = #children,
-                }
-            elseif depth < cfg.maxDepth then
-                local children = safeCall(function()
-                    return instance:GetChildren()
-                end, {})
-
-                local limit = math.min(#children, CONFIG.MAX_CHILDREN_PER_NODE)
-                if #children > CONFIG.MAX_CHILDREN_PER_NODE then
-                    state.warnings[#state.warnings + 1] = string.format(
-                        "%s: child limit reached at %s (%d -> %d)",
-                        name,
-                        fullName(instance),
-                        #children,
-                        CONFIG.MAX_CHILDREN_PER_NODE
-                    )
-                end
-
-                for index = 1, limit do
-                    if scanned + (#queue - head + 1) >= cfg.maxObjects then
-                        truncated = true
-                        break
-                    end
-                    local child = children[index]
-                    if not scannerGuiOwns(child) then
-                        queue[#queue + 1] = { instance = child, depth = depth + 1 }
-                    end
+                for _, child in ipairs(children) do
+                    queue[#queue + 1] = {instance = child, depth = node.depth + 1}
                 end
             end
         end
-
-        if state.total % CONFIG.YIELD_EVERY == 0 then
-            setStatus("Escaneando " .. name .. " • " .. tostring(scanned) .. " objetos", (rootIndex - 1) / rootCount)
+        if scanned % CONFIG.YIELD_EVERY == 0 then
+            setStatus(rootInfo.name .. " • " .. tostring(scanned), (index - 1) / count)
             task.wait()
         end
     end
-
-    state.roots[#state.roots + 1] = {
-        name = name,
-        path = fullName(root),
-        scanned = scanned,
-        truncated = truncated,
-        classes = rootClasses,
-    }
-
-    if truncated then
-        state.warnings[#state.warnings + 1] = name .. " reached configured scan limit"
-        terminalAdd("[WARN] " .. name .. " truncado en " .. tostring(scanned) .. " objetos")
-    else
-        terminalAdd("[OK] " .. name .. " • " .. tostring(scanned) .. " objetos")
-    end
-
-    setStatus("Completado " .. name, rootIndex / rootCount)
+    state.roots[#state.roots + 1] = {name = rootInfo.name, scanned = scanned, truncated = truncated}
+    if truncated then state.warnings[#state.warnings + 1] = rootInfo.name .. " reached configured scan limit" end
+    terminalAdd(string.format("[%s] %s • %d", truncated and "WARN" or "OK", rootInfo.name, scanned))
+    setStatus("Completado " .. rootInfo.name, index / count)
 end
 
-local function appendMetadataLines(lines, record)
-    local attrText = formatAttributes(record.attributes or {})
-    local tagText = formatTags(record.tags or {})
-    if attrText then
-        lines[#lines + 1] = "Attributes: " .. attrText
-    end
-    if tagText then
-        lines[#lines + 1] = "Tags: " .. tagText
-    end
+-- Target selection ------------------------------------------------------------
+
+local function matchTarget(pathLower, suffix)
+    return endsWith(pathLower, suffix)
 end
 
--- Passive source mapping -------------------------------------------------------
+local function allScriptRecords()
+    local combined = {}
+    for _, item in ipairs(state.modules) do combined[#combined + 1] = item end
+    for _, item in ipairs(state.scripts) do combined[#combined + 1] = item end
+    return combined
+end
 
-local function buildSourceCandidates()
-    local ranked = {}
-
-    for _, record in ipairs(state.modules) do
-        local score = sourcePriorityScore(record.path)
-        if score > 0 and record.instance then
-            ranked[#ranked + 1] = { record = record, score = score }
-        end
-    end
-
-    for _, record in ipairs(state.scripts) do
-        if record.className == "LocalScript" and record.instance then
-            local score = sourcePriorityScore(record.path)
-            if score > 0 then
-                ranked[#ranked + 1] = { record = record, score = score - 5 }
-            end
-        end
-    end
-
-    table.sort(ranked, function(a, b)
-        if a.score == b.score then
-            return a.record.path < b.record.path
-        end
-        return a.score > b.score
-    end)
-
-    local candidates = {}
-    local seenPath = {}
-    for _, entry in ipairs(ranked) do
-        if not seenPath[entry.record.path] then
-            seenPath[entry.record.path] = true
-            candidates[#candidates + 1] = entry.record
-            if #candidates >= CONFIG.SOURCE_MAX_CANDIDATES then
+local function selectTargets()
+    local all = allScriptRecords()
+    local selected = {}
+    local missing = {}
+    for _, rule in ipairs(TARGET_RULES) do
+        local found = nil
+        for _, record in ipairs(all) do
+            if matchTarget(string.lower(record.path), rule.suffix) then
+                found = record
                 break
             end
         end
-    end
-
-    state.source.candidates = candidates
-    return candidates
-end
-
-local function countPlain(text, needle)
-    local count = 0
-    local cursor = 1
-    while true do
-        local startPos = string.find(text, needle, cursor, true)
-        if not startPos then
-            break
-        end
-        count = count + 1
-        cursor = startPos + #needle
-    end
-    return count
-end
-
-local SOURCE_USAGE_TOKENS = {
-    "FireServer",
-    "InvokeServer",
-    "OnClientEvent",
-    "OnClientInvoke",
-    "OnServerEvent",
-    "OnServerInvoke",
-}
-
-local function contextFor(source, startPos, endPos)
-    local radius = CONFIG.SOURCE_CONTEXT_RADIUS
-    local from = math.max(1, startPos - radius)
-    local to = math.min(#source, endPos + radius)
-    return sanitize(string.sub(source, from, to))
-end
-
-local function nearbyUsageTokens(source, startPos, endPos)
-    local from = math.max(1, startPos - 320)
-    local to = math.min(#source, endPos + 320)
-    local window = string.sub(source, from, to)
-    local found = {}
-    for _, token in ipairs(SOURCE_USAGE_TOKENS) do
-        if string.find(window, token, 1, true) then
-            found[#found + 1] = token
+        if found then
+            selected[#selected + 1] = {label = rule.label, record = found}
+        else
+            missing[#missing + 1] = rule.label .. " :: " .. rule.suffix
         end
     end
-    return found
+    state.source.targets = selected
+    state.source.missingTargets = missing
+    return selected
 end
 
-local function buildRemoteNameSet()
-    local set = {}
-    for _, remote in ipairs(state.remotes) do
-        if string.match(remote.name, "^R[EF]/[^/]+/[^/]+$") then
-            set[remote.name] = remote
+-- Static decompiler analysis --------------------------------------------------
+
+local function extractQuotedLiterals(text)
+    local result = {}
+    local seen = {}
+    for value in string.gmatch(text, '"([^"\\]*)"') do
+        local rendered = safeLiteral(value)
+        if rendered ~= "" and not seen[rendered] then
+            seen[rendered] = true
+            result[#result + 1] = rendered
         end
     end
-    return set
+    for value in string.gmatch(text, "'([^'\\]*)'") do
+        local rendered = safeLiteral(value)
+        if rendered ~= "" and not seen[rendered] then
+            seen[rendered] = true
+            result[#result + 1] = rendered
+        end
+    end
+    return result
 end
 
-local function addRemoteIndex(remoteName, path)
-    local list = state.source.remoteIndex[remoteName]
-    if not list then
-        list = {}
-        state.source.remoteIndex[remoteName] = list
+local function contextBlock(lines, lineNumber)
+    local from = math.max(1, lineNumber - CONFIG.CONTEXT_LINES_BEFORE)
+    local to = math.min(#lines, lineNumber + CONFIG.CONTEXT_LINES_AFTER)
+    local out = {}
+    for index = from, to do
+        out[#out + 1] = string.format("L%d: %s", index, sanitize(trim(lines[index]), CONFIG.MAX_CONTEXT_LINE))
     end
-    for _, existing in ipairs(list) do
-        if existing == path then
-            return
-        end
-    end
-    list[#list + 1] = path
+    return table.concat(out, " | ")
 end
 
-local function analyseDecompiledRecord(record, remoteNameSet)
-    state.source.attemptedCount = state.source.attemptedCount + 1
+local function callReceiver(line, token)
+    local escaped = token:gsub("([^%w])", "%%%1")
+    local receiver = string.match(line, "([%a_][%w_]*)%s*:%s*" .. escaped)
+    if receiver then return receiver end
+    receiver = string.match(line, "([%a_][%w_%.%[%]\"']*)%s*%.%s*" .. escaped)
+    return receiver
+end
 
-    local ok, sourceOrError = pcall(function()
-        return decompile(record.instance)
-    end)
-
-    if not ok or type(sourceOrError) ~= "string" or sourceOrError == "" then
-        if #state.source.failures < CONFIG.SOURCE_MAX_FAILURES then
-            state.source.failures[#state.source.failures + 1] = {
-                path = record.path,
-                error = sanitize(sourceOrError or "decompile returned no source"),
-            }
-        end
-        return
-    end
-
-    state.source.decompiledCount = state.source.decompiledCount + 1
-
-    local source = sourceOrError
-    local originalChars = #source
-    local truncated = false
-    if #source > CONFIG.SOURCE_MAX_CHARS_PER_SCRIPT then
-        source = string.sub(source, 1, CONFIG.SOURCE_MAX_CHARS_PER_SCRIPT)
-        truncated = true
-    end
-    state.source.scannedChars = state.source.scannedChars + #source
-
-    local tokenCounts = {}
-    for _, token in ipairs(SOURCE_USAGE_TOKENS) do
-        local count = countPlain(source, token)
-        if count > 0 then
-            tokenCounts[token] = count
+local function findAliasOrigin(lines, lineNumber, receiver)
+    if not receiver or receiver == "" then return nil end
+    local base = string.match(receiver, "^([%a_][%w_]*)") or receiver
+    local from = math.max(1, lineNumber - CONFIG.MAX_ALIAS_LOOKBACK)
+    for index = lineNumber - 1, from, -1 do
+        local line = trim(lines[index])
+        local lhs = string.match(line, "^local%s+([%a_][%w_]*)%s*=") or string.match(line, "^([%a_][%w_]*)%s*=")
+        if lhs == base then
+            return string.format("L%d: %s", index, sanitize(line, CONFIG.MAX_CONTEXT_LINE))
         end
     end
+    return nil
+end
 
-    local remoteRefs = {}
-    local seenRemote = {}
-    for remoteName in string.gmatch(source, "R[EF]/[%w_]+/[%w_]+") do
-        if remoteNameSet[remoteName] and not seenRemote[remoteName] then
-            seenRemote[remoteName] = true
-            local startPos, endPos = string.find(source, remoteName, 1, true)
-            if startPos then
-                local ref = {
-                    name = remoteName,
-                    path = remoteNameSet[remoteName].path,
-                    nearbyTokens = nearbyUsageTokens(source, startPos, endPos),
-                    context = contextFor(source, startPos, endPos),
-                }
-                remoteRefs[#remoteRefs + 1] = ref
-                state.source.exactRemoteReferences = state.source.exactRemoteReferences + 1
-                addRemoteIndex(remoteName, record.path)
-                if #remoteRefs >= CONFIG.SOURCE_MAX_REMOTE_REFS_PER_SCRIPT then
-                    break
-                end
+local function extractRequireLines(lines)
+    local out = {}
+    for index, line in ipairs(lines) do
+        if string.find(line, "require(", 1, true) then
+            out[#out + 1] = string.format("L%d: %s", index, sanitize(trim(line), CONFIG.MAX_CONTEXT_LINE))
+            if #out >= CONFIG.MAX_REQUIRES_PER_SCRIPT then break end
+        end
+    end
+    return out
+end
+
+local function extractInterestingLines(lines)
+    local out = {}
+    local seen = {}
+    for index, line in ipairs(lines) do
+        local lower = string.lower(line)
+        local interesting = false
+        for _, keyword in ipairs(INTERESTING_KEYWORDS) do
+            if string.find(lower, keyword, 1, true) then
+                interesting = true
+                break
             end
         end
-    end
-
-    table.sort(remoteRefs, function(a, b)
-        return a.name < b.name
-    end)
-
-    state.source.results[#state.source.results + 1] = {
-        className = record.className,
-        path = record.path,
-        sourceChars = originalChars,
-        scannedChars = #source,
-        truncated = truncated,
-        requireCalls = countPlain(source, "require("),
-        tokenCounts = tokenCounts,
-        remoteRefs = remoteRefs,
-    }
-end
-
-local function runSourceAnalysis()
-    state.source = emptySourceState()
-    state.source.attempted = true
-
-    if not state.capabilities.decompile then
-        state.source.failures[#state.source.failures + 1] = {
-            path = "[executor]",
-            error = "decompile() is not available",
-        }
-        return false, "decompile() no está disponible en este ejecutor"
-    end
-
-    local candidates = buildSourceCandidates()
-    local remoteNameSet = buildRemoteNameSet()
-
-    terminalSet("[SOURCE] V1.4\n[INFO] Decompilando solo candidatos núcleo. No se ejecutan ModuleScripts ni remotes.")
-
-    for index, record in ipairs(candidates) do
-        setStatus(
-            string.format("SOURCE %d/%d • %s", index, #candidates, record.name or record.className),
-            #candidates > 0 and (index - 1) / #candidates or 0
-        )
-        terminalAdd(string.format("[SOURCE] %d/%d %s", index, #candidates, record.path))
-        analyseDecompiledRecord(record, remoteNameSet)
-        task.wait()
-    end
-
-    table.sort(state.source.results, function(a, b)
-        return a.path < b.path
-    end)
-
-    setStatus("SOURCE completado", 1)
-    return true
-end
-
-local function buildSummary()
-    local lines = {}
-    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.4 - SUMMARY"
-    lines[#lines + 1] = "Version: " .. VERSION
-    lines[#lines + 1] = "PlaceId: " .. tostring(game.PlaceId)
-    lines[#lines + 1] = "GameId: " .. tostring(game.GameId)
-    lines[#lines + 1] = "PlaceVersion: " .. tostring(safeCall(function() return game.PlaceVersion end, "unavailable"))
-    lines[#lines + 1] = "CreatorId: " .. tostring(safeCall(function() return game.CreatorId end, "unavailable"))
-    lines[#lines + 1] = "Workspace.StreamingEnabled: " .. tostring(safeCall(function() return Workspace.StreamingEnabled end, "unavailable"))
-    lines[#lines + 1] = "LocalPlayer: " .. LocalPlayer.Name .. " (" .. tostring(LocalPlayer.UserId) .. ")"
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[COUNTS]"
-    lines[#lines + 1] = "Objects scanned: " .. tostring(state.total)
-    lines[#lines + 1] = "RemoteEvents: " .. tostring(state.classCounts.RemoteEvent or 0)
-    lines[#lines + 1] = "RemoteFunctions: " .. tostring(state.classCounts.RemoteFunction or 0)
-    lines[#lines + 1] = "ModuleScripts: " .. tostring(state.classCounts.ModuleScript or 0)
-    lines[#lines + 1] = "Core modules: " .. tostring(#state.coreModules)
-    lines[#lines + 1] = "LocalScripts: " .. tostring(state.classCounts.LocalScript or 0)
-    lines[#lines + 1] = "Scripts: " .. tostring(state.classCounts.Script or 0)
-    lines[#lines + 1] = "Tools: " .. tostring(state.classCounts.Tool or 0)
-    lines[#lines + 1] = "ProximityPrompts: " .. tostring(state.classCounts.ProximityPrompt or 0)
-    lines[#lines + 1] = "ClickDetectors: " .. tostring(state.classCounts.ClickDetector or 0)
-    lines[#lines + 1] = "Folders: " .. tostring(state.classCounts.Folder or 0)
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[SOURCE ANALYSIS]"
-    lines[#lines + 1] = "Attempted: " .. tostring(state.source.attempted)
-    lines[#lines + 1] = "Candidates: " .. tostring(#state.source.candidates)
-    lines[#lines + 1] = "Decompile attempts: " .. tostring(state.source.attemptedCount)
-    lines[#lines + 1] = "Decompiler returned source: " .. tostring(state.source.decompiledCount)
-    lines[#lines + 1] = "Exact observed remote references: " .. tostring(state.source.exactRemoteReferences)
-    lines[#lines + 1] = "Scanned source characters: " .. tostring(state.source.scannedChars)
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[ROOTS]"
-    for _, root in ipairs(state.roots) do
-        lines[#lines + 1] = string.format("%s: %d objects%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[SKIPPED HEAVY VISUAL SUBTREES]"
-    if #state.skippedHeavy == 0 then
-        lines[#lines + 1] = "None"
-    else
-        for _, item in ipairs(state.skippedHeavy) do
-            lines[#lines + 1] = string.format("- %s (%d direct children)", item.path, item.directChildren)
-        end
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[EXECUTOR CAPABILITY PRESENCE]"
-    for _, key in ipairs(sortedKeys(state.capabilities)) do
-        lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[PRIORITY NAME HITS]"
-    for index, item in ipairs(state.priority) do
-        lines[#lines + 1] = string.format("%d. [%s] %s", index, item.className, item.path)
-    end
-    if #state.priority == 0 then
-        lines[#lines + 1] = "None"
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[WARNINGS]"
-    if #state.warnings == 0 then
-        lines[#lines + 1] = "None"
-    else
-        for _, warning in ipairs(state.warnings) do
-            lines[#lines + 1] = "- " .. warning
-        end
-    end
-    for key, hit in pairs(state.limits) do
-        if hit then
-            lines[#lines + 1] = "- Report category limit reached: " .. key
-        end
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[LIMITATIONS]"
-    lines[#lines + 1] = "Only client-visible/replicated information is included."
-    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, and no connections were inspected."
-    lines[#lines + 1] = "If SOURCE was run, decompiler output is reconstructed code and may differ from original Studio source."
-    lines[#lines + 1] = "Potentially sensitive attribute values are redacted from exported reports."
-    return table.concat(lines, "\n")
-end
-
-local function buildRemoteNamespaces()
-    local namespaces = {}
-    for _, item in ipairs(state.remotes) do
-        local namespace = string.match(item.name, "^R[EF]/([^/]+)/")
-        if namespace then
-            local record = namespaces[namespace]
-            if not record then
-                record = { RemoteEvent = 0, RemoteFunction = 0 }
-                namespaces[namespace] = record
-            end
-            record[item.className] = (record[item.className] or 0) + 1
-        end
-    end
-    return namespaces
-end
-
-local function buildCoreMap()
-    local lines = {
-        "ROBLOX CLIENT SCANNER V1.4 - CORE MAP",
-        "Core modules and network namespaces selected from observed client-visible architecture.",
-        "SOURCE MAP is separate and only appears after ANALIZAR SOURCE.",
-        "",
-        "[NETWORK NAMESPACES]",
-    }
-    local namespaces = buildRemoteNamespaces()
-    for _, namespace in ipairs(sortedKeys(namespaces)) do
-        local record = namespaces[namespace]
-        lines[#lines + 1] = string.format(
-            "%s: RE=%d RF=%d TOTAL=%d",
-            namespace,
-            record.RemoteEvent or 0,
-            record.RemoteFunction or 0,
-            (record.RemoteEvent or 0) + (record.RemoteFunction or 0)
-        )
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[CORE MODULES]"
-    table.sort(state.coreModules, function(a, b) return a.path < b.path end)
-    for index, item in ipairs(state.coreModules) do
-        lines[#lines + 1] = string.format("#%d %s", index, item.path)
-        appendMetadataLines(lines, item)
-    end
-    if #state.coreModules == 0 then
-        lines[#lines + 1] = "None"
-    end
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[CAPABILITIES DETECTED]"
-    for _, key in ipairs(sortedKeys(state.capabilities)) do
-        lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
-    end
-    return table.concat(lines, "\n")
-end
-
-local function buildSourceMap()
-    local lines = {
-        "ROBLOX CLIENT SCANNER V1.4 - SOURCE MAP",
-        "Read-only analysis of decompiler output for selected client-visible scripts/modules.",
-        "No ModuleScript was required and no remote was invoked.",
-        "Decompiler output is reconstructed and is not guaranteed to match original Studio source.",
-        "",
-        "[STATS]",
-        "Attempted: " .. tostring(state.source.attempted),
-        "Candidates selected: " .. tostring(#state.source.candidates),
-        "Decompile attempts: " .. tostring(state.source.attemptedCount),
-        "Decompiler returned source: " .. tostring(state.source.decompiledCount),
-        "Failures recorded: " .. tostring(#state.source.failures),
-        "Scanned source characters: " .. tostring(state.source.scannedChars),
-        "Exact observed remote references: " .. tostring(state.source.exactRemoteReferences),
-        "",
-        "[SCRIPT / MODULE RESULTS]",
-    }
-
-    for index, item in ipairs(state.source.results) do
-        lines[#lines + 1] = string.format("#%d [%s] %s", index, item.className, item.path)
-        lines[#lines + 1] = string.format(
-            "SourceChars: %d | ScannedChars: %d | Truncated: %s | require(: %d",
-            item.sourceChars,
-            item.scannedChars,
-            tostring(item.truncated),
-            item.requireCalls
-        )
-        if next(item.tokenCounts) ~= nil then
-            local tokenParts = {}
-            for _, token in ipairs(sortedKeys(item.tokenCounts)) do
-                tokenParts[#tokenParts + 1] = token .. "=" .. tostring(item.tokenCounts[token])
-            end
-            lines[#lines + 1] = "NetworkTokens: " .. table.concat(tokenParts, ", ")
-        end
-        lines[#lines + 1] = "ExactRemoteRefs: " .. tostring(#item.remoteRefs)
-        for _, ref in ipairs(item.remoteRefs) do
-            local hint = #ref.nearbyTokens > 0 and table.concat(ref.nearbyTokens, ",") or "none"
-            lines[#lines + 1] = "  - " .. ref.name
-            lines[#lines + 1] = "    RemotePath: " .. ref.path
-            lines[#lines + 1] = "    NearbyTokens: " .. hint
-            lines[#lines + 1] = "    Context: " .. ref.context
-        end
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[REMOTE -> SCRIPT/MODULE INDEX]"
-    for _, remoteName in ipairs(sortedKeys(state.source.remoteIndex)) do
-        lines[#lines + 1] = remoteName
-        local paths = state.source.remoteIndex[remoteName]
-        table.sort(paths)
-        for _, path in ipairs(paths) do
-            lines[#lines + 1] = "  <- " .. path
-        end
-    end
-    if next(state.source.remoteIndex) == nil then
-        lines[#lines + 1] = "No exact RE/RF string references were confirmed."
-    end
-
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[DECOMPILE FAILURES]"
-    if #state.source.failures == 0 then
-        lines[#lines + 1] = "None"
-    else
-        for _, failure in ipairs(state.source.failures) do
-            lines[#lines + 1] = "- " .. failure.path .. " :: " .. failure.error
-        end
-    end
-
-    return table.concat(lines, "\n")
-end
-
-local function buildRemotes()
-    local lines = { "ROBLOX CLIENT SCANNER V1.4 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
-    table.sort(state.remotes, function(a, b) return a.path < b.path end)
-    for index, item in ipairs(state.remotes) do
-        lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
-        lines[#lines + 1] = "Name: " .. sanitize(item.name)
-        lines[#lines + 1] = "Path: " .. item.path
-        lines[#lines + 1] = "Parent: " .. item.parent
-        appendMetadataLines(lines, item)
-        lines[#lines + 1] = ""
-    end
-    return table.concat(lines, "\n")
-end
-
-local function buildModules()
-    local lines = { "ROBLOX CLIENT SCANNER V1.4 - MODULES", "Total: " .. tostring(#state.modules), "" }
-    table.sort(state.modules, function(a, b) return a.path < b.path end)
-    for index, item in ipairs(state.modules) do
-        lines[#lines + 1] = string.format("#%d [ModuleScript]", index)
-        lines[#lines + 1] = "Path: " .. item.path
-        appendMetadataLines(lines, item)
-        lines[#lines + 1] = ""
-    end
-    return table.concat(lines, "\n")
-end
-
-local function buildScripts()
-    local lines = { "ROBLOX CLIENT SCANNER V1.4 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
-    table.sort(state.scripts, function(a, b) return a.path < b.path end)
-    for index, item in ipairs(state.scripts) do
-        lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
-        lines[#lines + 1] = "Path: " .. item.path
-        lines[#lines + 1] = "Enabled: " .. tostring(item.enabled)
-        appendMetadataLines(lines, item)
-        lines[#lines + 1] = ""
-    end
-    return table.concat(lines, "\n")
-end
-
-local function formatClassCounts(classCounts)
-    local parts = {}
-    for _, className in ipairs(sortedKeys(classCounts)) do
-        parts[#parts + 1] = className .. "=" .. tostring(classCounts[className])
-    end
-    return table.concat(parts, ", ")
-end
-
-local function buildStructure()
-    local lines = {
-        "ROBLOX CLIENT SCANNER V1.4 - STRUCTURE / METADATA",
-        "Folders/configurations are listed by full path; heavy visual asset subtrees are intentionally skipped.",
-        "",
-        "[ROOT CLASS SUMMARIES]",
-    }
-    for _, root in ipairs(state.roots) do
-        lines[#lines + 1] = "ROOT: " .. root.name
-        lines[#lines + 1] = "Path: " .. root.path
-        lines[#lines + 1] = "Objects: " .. tostring(root.scanned)
-        lines[#lines + 1] = "Classes: " .. formatClassCounts(root.classes)
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[FOLDERS / CONFIGURATIONS]"
-    table.sort(state.structure, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.structure) do
+        if interesting then
+            local rendered = string.format("L%d: %s", index, sanitize(trim(line), CONFIG.MAX_CONTEXT_LINE))
+            if not seen[rendered] then
+                seen[rendered] = true
