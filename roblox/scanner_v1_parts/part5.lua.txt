@@ -6,7 +6,7 @@
         end)
 
         if ok then
-            setStatus("Scan completado • " .. tostring(state.total) .. " objetos", 1)
+            setStatus("Scan V1.3 completado • " .. tostring(state.total) .. " objetos", 1)
             terminalSet(compactTerminalSummary())
             setExportsEnabled(true)
             ScanButton.Text = "ESCANEAR DE NUEVO"
@@ -14,7 +14,7 @@
         else
             reportData = nil
             setStatus("Error durante el scan", 0)
-            terminalSet("SCANNER ERROR\n\n" .. tostring(err))
+            terminalSet("SCANNER V1.3 ERROR\n\n" .. tostring(err))
             ScanButton.Text = "REINTENTAR SCAN"
             ScanButton.AutoButtonColor = true
         end
