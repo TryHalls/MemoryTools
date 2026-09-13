@@ -1,12 +1,20 @@
             setStatus("Generando reportes...", 0.98)
             task.wait()
             reportData = buildReports()
+            reportData.summary = string.gsub(reportData.summary, "V1%.4", "V1.5")
+            reportData.core = string.gsub(reportData.core, "V1%.4", "V1.5")
+            reportData.remotes = string.gsub(reportData.remotes, "V1%.4", "V1.5")
+            reportData.modules = string.gsub(reportData.modules, "V1%.4", "V1.5")
+            reportData.scripts = string.gsub(reportData.scripts, "V1%.4", "V1.5")
+            reportData.structure = string.gsub(reportData.structure, "V1%.4", "V1.5")
+            reportData.source = V15Patch.buildSourceMap(state)
+            reportData.all = buildAll(reportData.summary, reportData.core, reportData.source, reportData.remotes, reportData.modules, reportData.scripts, reportData.structure)
         end, function(message)
             return tostring(message)
         end)
 
         if ok then
-            setStatus("Scan V1.4 completado • " .. tostring(state.total) .. " objetos", 1)
+            setStatus("Scan V1.5 completado • " .. tostring(state.total) .. " objetos", 1)
             terminalSet(compactTerminalSummary())
             setExportsEnabled(true)
             CopySource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
@@ -18,7 +26,7 @@
         else
             reportData = nil
             setStatus("Error durante el scan", 0)
-            terminalSet("SCANNER V1.4 ERROR\n\n" .. tostring(err))
+            terminalSet("SCANNER V1.5 ERROR\n\n" .. tostring(err))
             ScanButton.Text = "REINTENTAR SCAN"
             ScanButton.AutoButtonColor = true
             setSourceButtonEnabled(false)
@@ -49,19 +57,27 @@ SourceScanButton.MouseButton1Click:Connect(function()
 
     task.spawn(function()
         local ok, resultOrError = xpcall(function()
-            local success, message = runSourceAnalysis()
+            local success, message = V15Patch.run(state, buildSourceCandidates, setStatus, terminalSet, terminalAdd)
             if not success then
                 error(message or "source analysis failed")
             end
             reportData = buildReports()
+            reportData.summary = string.gsub(reportData.summary, "V1%.4", "V1.5")
+            reportData.core = string.gsub(reportData.core, "V1%.4", "V1.5")
+            reportData.remotes = string.gsub(reportData.remotes, "V1%.4", "V1.5")
+            reportData.modules = string.gsub(reportData.modules, "V1%.4", "V1.5")
+            reportData.scripts = string.gsub(reportData.scripts, "V1%.4", "V1.5")
+            reportData.structure = string.gsub(reportData.structure, "V1%.4", "V1.5")
+            reportData.source = V15Patch.buildSourceMap(state)
+            reportData.all = buildAll(reportData.summary, reportData.core, reportData.source, reportData.remotes, reportData.modules, reportData.scripts, reportData.structure)
             return true
         end, function(message)
             return tostring(message)
         end)
 
         if ok then
-            setStatus("SOURCE V1.4 completado", 1)
-            terminalSet(compactSourceSummary())
+            setStatus("SOURCE V1.5 completado", 1)
+            terminalSet(V15Patch.compactSourceSummary(state))
             CopySource.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
             CopySource.TextColor3 = Color3.fromRGB(245, 247, 251)
             CopySource.AutoButtonColor = true
@@ -69,7 +85,7 @@ SourceScanButton.MouseButton1Click:Connect(function()
             SourceScanButton.AutoButtonColor = true
         else
             setStatus("Error en SOURCE", 0)
-            terminalSet("SOURCE V1.4 ERROR\n\n" .. tostring(resultOrError))
+            terminalSet("SOURCE V1.5 ERROR\n\n" .. tostring(resultOrError))
             SourceScanButton.Text = "REINTENTAR SOURCE"
             SourceScanButton.AutoButtonColor = true
         end
