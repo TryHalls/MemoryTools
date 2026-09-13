@@ -1,8 +1,8 @@
-# MemoryTools Official V1.0.1
+# MemoryTools Official V1.0.2
 
 Cliente modular para el PlaceId 107778070777162. El loader público es
 roblox/official_v1.lua; descarga el bootstrap y los módulos con cache bust
-1.0.1.
+1.0.2.
 
 ## Diseño
 
@@ -17,18 +17,18 @@ features independientes.
 
 ## Carga
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.1"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.2"))()
 
 La segunda ejecución destruye la instancia anterior mediante
 getgenv().__MEMORYTOOLS_V1 (con fallback a _G).
 
-## Probe pasivo V1.0.1
+## Probe pasivo compacto V1.0.2
 
-roblox/passive_probe_v1_0_1.lua inspecciona únicamente source cliente para
-los targets Staff/Cmdr/RigSync/WriteWalkSpeed/WriteSpeedPower solicitados.
-No carga módulos, no dispara remotes y no inspecciona conexiones ni el GC.
+roblox/passive_probe_v1_0_2.lua inspecciona únicamente ventanas de source
+relevantes para Staff, Cmdr, RigSync y el mapeo exacto de rarity. No carga
+módulos, no dispara remotes y no inspecciona conexiones ni el GC.
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/passive_probe_v1_0_1.lua?v=1.0.1"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/passive_probe_v1_0_2.lua?v=1.0.2"))()
 
 ## Límites intencionales de V1
 

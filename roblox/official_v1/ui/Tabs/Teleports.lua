@@ -5,6 +5,7 @@ return function(Context)
         C.Button(page, "TP TO BASE", function()
             Context.Controllers.TeleportController:ToBase()
         end, C.Theme.accent)
+        C.Label(page, "LOCAL TP - server may reconcile", 28, "muted")
         C.Section(page, "Area Teleports")
         local container = Instance.new("Frame")
         container.BackgroundTransparency = 1

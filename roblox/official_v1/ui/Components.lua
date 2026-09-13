@@ -1,5 +1,6 @@
 return function(Context)
     local Components = {}
+    local DropdownPool = Context.Modules["ui/DropdownPool"]
 
     Components.Theme = {
         background = Color3.fromRGB(15, 18, 24),
@@ -204,31 +205,48 @@ return function(Context)
             frame.Size = UDim2.new(1, 0, 0, 64)
             list.Size = UDim2.new(1, -16, 0, 0)
         end
+        local function createOptionRecord()
+            local record = { Value = nil, Button = nil }
+            local choice = Components.Button(list, "", function()
+                local value = record.Value
+                if value == nil or not record.Button.Active or not record.Button.Visible then return end
+                object.Selected = value
+                render()
+                close()
+                if callback then callback(value) end
+            end, Theme.raised)
+            choice.Size = UDim2.new(1, -5, 0, 38)
+            choice.TextSize = 12
+            choice.Visible = false
+            choice.Active = false
+            record.Button = choice
+            return record
+        end
+        local function updateOptionRecord(record, visible, text)
+            local button = record.Button
+            button.Text = text
+            button.Visible = visible
+            button.Active = visible
+        end
         local function rebuild(newOptions, newSelected)
-            object.Options = newOptions or {}
+            local previousOptions = object.Options
+            local previousSelected = object.Selected
+            local ok, err = DropdownPool.Apply(optionButtons, newOptions, createOptionRecord, updateOptionRecord)
+            if not ok then
+                pcall(DropdownPool.Apply, optionButtons, previousOptions, createOptionRecord, updateOptionRecord)
+                object.Selected = previousSelected
+                render()
+                return false, err
+            end
+            object.Options = newOptions
             if newSelected ~= nil then object.Selected = newSelected end
-            for _, button in ipairs(optionButtons) do
-                button:Destroy()
-            end
-            table.clear(optionButtons)
-            for _, option in ipairs(object.Options) do
-                local value = option
-                local choice = Components.Button(list, tostring(value), function()
-                    object.Selected = value
-                    render()
-                    close()
-                    if callback then callback(value) end
-                end, Theme.raised)
-                choice.Size = UDim2.new(1, -5, 0, 38)
-                choice.TextSize = 12
-                table.insert(optionButtons, choice)
-            end
             render()
             if open then
                 local height = math.min(190, #object.Options * 42)
                 list.Size = UDim2.new(1, -16, 0, height)
                 frame.Size = UDim2.new(1, 0, 0, 68 + height)
             end
+            return true
         end
         main.Activated:Connect(function()
             open = not open
@@ -239,9 +257,17 @@ return function(Context)
             else close() end
         end)
         object.Instance = frame
-        object.SetOptions = function(_, newOptions, newSelected) rebuild(newOptions, newSelected) end
+        object.SetOptions = function(_, newOptions, newSelected)
+            local ok, success, err = pcall(rebuild, newOptions, newSelected)
+            if not ok then return false, tostring(success) end
+            if not success then return false, tostring(err) end
+            return true
+        end
         object.Get = function() return object.Selected end
-        rebuild(options or {}, selected)
+        local initialOk, initialError = object:SetOptions(options or {}, selected)
+        if not initialOk then
+            Context.Logger:Warn(labelText .. " dropdown initialization failed: " .. tostring(initialError))
+        end
         return object
     end
 

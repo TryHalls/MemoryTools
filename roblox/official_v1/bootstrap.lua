@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.1 bootstrap
-local VERSION = "1.0.1"
+-- MemoryTools Official V1.0.2 bootstrap
+local VERSION = "1.0.2"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -18,6 +18,7 @@ local MODULE_PATHS = {
     "features/PlayerController",
     "features/TeleportController",
     "features/AutoStealController",
+    "ui/DropdownPool",
     "ui/Components",
     "ui/Tabs/Home",
     "ui/Tabs/Player",
@@ -147,6 +148,7 @@ function Context:Destroy(reason)
     end
 end
 
+instantiate("ui/DropdownPool")
 instantiate("ui/Components")
 for _, name in ipairs({ "Home", "Player", "AutoSteal", "Teleports", "Debug", "Settings" }) do
     instantiate("ui/Tabs/" .. name)

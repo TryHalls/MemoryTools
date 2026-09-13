@@ -24,6 +24,7 @@ return function(Context)
                 zone = "ALL",
                 targetMode = "Nearest",
                 specificAsset = "ANY",
+                rarity = "ANY",
                 teleportToEgg = true,
                 returnToBase = true,
                 repeatEnabled = true,
@@ -97,7 +98,7 @@ return function(Context)
         for _, record in ipairs(records) do
             if self:_validRecord(record) then table.insert(candidates, record) end
         end
-        if #candidates == 0 then return nil, "No eligible field eggs" end
+        if #candidates == 0 then return nil, "Waiting for eligible field eggs" end
         self:_state("SELECT_TARGET")
         if self.Config.targetMode == "Random" then
             return candidates[math.random(1, #candidates)]

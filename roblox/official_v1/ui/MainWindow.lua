@@ -207,10 +207,11 @@ return function(Context)
                 builder(page, self)
             end, tracebackError)
             if not built then
-                context.Controllers.AutoStealController:Stop(
-                    "UI construction failed (" .. tab.text .. "):\n" .. tostring(buildError),
-                    true
-                )
+                local constructionError = "UI construction failed (" .. tab.text .. "):\n" .. tostring(buildError)
+                context.Logger:Error(constructionError)
+                if tab.key == "AutoSteal" then
+                    context.Controllers.AutoStealController:Stop(constructionError, true)
+                end
                 local failure = C.Label(page, tab.text .. " unavailable\n" .. tostring(buildError), 100, "muted")
                 failure.AutomaticSize = Enum.AutomaticSize.Y
             end

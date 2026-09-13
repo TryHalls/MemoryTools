@@ -8,6 +8,7 @@ return function(Context)
         C.NumberInput(page, "WalkSpeed", snapshot.walkSpeed, function(value)
             return controller:SetWalkSpeed(value)
         end)
+        C.Label(page, "LOCAL OVERRIDE - server may reconcile", 28, "muted")
         local walkToggle = C.Toggle(page, "Enable WalkSpeed Override", false, function(enabled)
             local ok, err = controller:EnableWalkSpeed(enabled)
             if ok == false then Context.Logger:Warn(err) end
