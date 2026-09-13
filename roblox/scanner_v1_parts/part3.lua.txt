@@ -133,9 +133,230 @@ local function appendMetadataLines(lines, record)
     end
 end
 
+-- Passive source mapping -------------------------------------------------------
+
+local function buildSourceCandidates()
+    local ranked = {}
+
+    for _, record in ipairs(state.modules) do
+        local score = sourcePriorityScore(record.path)
+        if score > 0 and record.instance then
+            ranked[#ranked + 1] = { record = record, score = score }
+        end
+    end
+
+    for _, record in ipairs(state.scripts) do
+        if record.className == "LocalScript" and record.instance then
+            local score = sourcePriorityScore(record.path)
+            if score > 0 then
+                ranked[#ranked + 1] = { record = record, score = score - 5 }
+            end
+        end
+    end
+
+    table.sort(ranked, function(a, b)
+        if a.score == b.score then
+            return a.record.path < b.record.path
+        end
+        return a.score > b.score
+    end)
+
+    local candidates = {}
+    local seenPath = {}
+    for _, entry in ipairs(ranked) do
+        if not seenPath[entry.record.path] then
+            seenPath[entry.record.path] = true
+            candidates[#candidates + 1] = entry.record
+            if #candidates >= CONFIG.SOURCE_MAX_CANDIDATES then
+                break
+            end
+        end
+    end
+
+    state.source.candidates = candidates
+    return candidates
+end
+
+local function countPlain(text, needle)
+    local count = 0
+    local cursor = 1
+    while true do
+        local startPos = string.find(text, needle, cursor, true)
+        if not startPos then
+            break
+        end
+        count = count + 1
+        cursor = startPos + #needle
+    end
+    return count
+end
+
+local SOURCE_USAGE_TOKENS = {
+    "FireServer",
+    "InvokeServer",
+    "OnClientEvent",
+    "OnClientInvoke",
+    "OnServerEvent",
+    "OnServerInvoke",
+}
+
+local function contextFor(source, startPos, endPos)
+    local radius = CONFIG.SOURCE_CONTEXT_RADIUS
+    local from = math.max(1, startPos - radius)
+    local to = math.min(#source, endPos + radius)
+    return sanitize(string.sub(source, from, to))
+end
+
+local function nearbyUsageTokens(source, startPos, endPos)
+    local from = math.max(1, startPos - 320)
+    local to = math.min(#source, endPos + 320)
+    local window = string.sub(source, from, to)
+    local found = {}
+    for _, token in ipairs(SOURCE_USAGE_TOKENS) do
+        if string.find(window, token, 1, true) then
+            found[#found + 1] = token
+        end
+    end
+    return found
+end
+
+local function buildRemoteNameSet()
+    local set = {}
+    for _, remote in ipairs(state.remotes) do
+        if string.match(remote.name, "^R[EF]/[^/]+/[^/]+$") then
+            set[remote.name] = remote
+        end
+    end
+    return set
+end
+
+local function addRemoteIndex(remoteName, path)
+    local list = state.source.remoteIndex[remoteName]
+    if not list then
+        list = {}
+        state.source.remoteIndex[remoteName] = list
+    end
+    for _, existing in ipairs(list) do
+        if existing == path then
+            return
+        end
+    end
+    list[#list + 1] = path
+end
+
+local function analyseDecompiledRecord(record, remoteNameSet)
+    state.source.attemptedCount = state.source.attemptedCount + 1
+
+    local ok, sourceOrError = pcall(function()
+        return decompile(record.instance)
+    end)
+
+    if not ok or type(sourceOrError) ~= "string" or sourceOrError == "" then
+        if #state.source.failures < CONFIG.SOURCE_MAX_FAILURES then
+            state.source.failures[#state.source.failures + 1] = {
+                path = record.path,
+                error = sanitize(sourceOrError or "decompile returned no source"),
+            }
+        end
+        return
+    end
+
+    state.source.decompiledCount = state.source.decompiledCount + 1
+
+    local source = sourceOrError
+    local originalChars = #source
+    local truncated = false
+    if #source > CONFIG.SOURCE_MAX_CHARS_PER_SCRIPT then
+        source = string.sub(source, 1, CONFIG.SOURCE_MAX_CHARS_PER_SCRIPT)
+        truncated = true
+    end
+    state.source.scannedChars = state.source.scannedChars + #source
+
+    local tokenCounts = {}
+    for _, token in ipairs(SOURCE_USAGE_TOKENS) do
+        local count = countPlain(source, token)
+        if count > 0 then
+            tokenCounts[token] = count
+        end
+    end
+
+    local remoteRefs = {}
+    local seenRemote = {}
+    for remoteName in string.gmatch(source, "R[EF]/[%w_]+/[%w_]+") do
+        if remoteNameSet[remoteName] and not seenRemote[remoteName] then
+            seenRemote[remoteName] = true
+            local startPos, endPos = string.find(source, remoteName, 1, true)
+            if startPos then
+                local ref = {
+                    name = remoteName,
+                    path = remoteNameSet[remoteName].path,
+                    nearbyTokens = nearbyUsageTokens(source, startPos, endPos),
+                    context = contextFor(source, startPos, endPos),
+                }
+                remoteRefs[#remoteRefs + 1] = ref
+                state.source.exactRemoteReferences = state.source.exactRemoteReferences + 1
+                addRemoteIndex(remoteName, record.path)
+                if #remoteRefs >= CONFIG.SOURCE_MAX_REMOTE_REFS_PER_SCRIPT then
+                    break
+                end
+            end
+        end
+    end
+
+    table.sort(remoteRefs, function(a, b)
+        return a.name < b.name
+    end)
+
+    state.source.results[#state.source.results + 1] = {
+        className = record.className,
+        path = record.path,
+        sourceChars = originalChars,
+        scannedChars = #source,
+        truncated = truncated,
+        requireCalls = countPlain(source, "require("),
+        tokenCounts = tokenCounts,
+        remoteRefs = remoteRefs,
+    }
+end
+
+local function runSourceAnalysis()
+    state.source = emptySourceState()
+    state.source.attempted = true
+
+    if not state.capabilities.decompile then
+        state.source.failures[#state.source.failures + 1] = {
+            path = "[executor]",
+            error = "decompile() is not available",
+        }
+        return false, "decompile() no está disponible en este ejecutor"
+    end
+
+    local candidates = buildSourceCandidates()
+    local remoteNameSet = buildRemoteNameSet()
+
+    terminalSet("[SOURCE] V1.4\n[INFO] Decompilando solo candidatos núcleo. No se ejecutan ModuleScripts ni remotes.")
+
+    for index, record in ipairs(candidates) do
+        setStatus(
+            string.format("SOURCE %d/%d • %s", index, #candidates, record.name or record.className),
+            #candidates > 0 and (index - 1) / #candidates or 0
+        )
+        terminalAdd(string.format("[SOURCE] %d/%d %s", index, #candidates, record.path))
+        analyseDecompiledRecord(record, remoteNameSet)
+        task.wait()
+    end
+
+    table.sort(state.source.results, function(a, b)
+        return a.path < b.path
+    end)
+
+    setStatus("SOURCE completado", 1)
+    return true
+end
+
 local function buildSummary()
     local lines = {}
-    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.3 - SUMMARY"
+    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.4 - SUMMARY"
     lines[#lines + 1] = "Version: " .. VERSION
     lines[#lines + 1] = "PlaceId: " .. tostring(game.PlaceId)
     lines[#lines + 1] = "GameId: " .. tostring(game.GameId)
@@ -157,6 +378,14 @@ local function buildSummary()
     lines[#lines + 1] = "ClickDetectors: " .. tostring(state.classCounts.ClickDetector or 0)
     lines[#lines + 1] = "Folders: " .. tostring(state.classCounts.Folder or 0)
     lines[#lines + 1] = ""
+    lines[#lines + 1] = "[SOURCE ANALYSIS]"
+    lines[#lines + 1] = "Attempted: " .. tostring(state.source.attempted)
+    lines[#lines + 1] = "Candidates: " .. tostring(#state.source.candidates)
+    lines[#lines + 1] = "Decompile attempts: " .. tostring(state.source.attemptedCount)
+    lines[#lines + 1] = "Decompiler returned source: " .. tostring(state.source.decompiledCount)
+    lines[#lines + 1] = "Exact observed remote references: " .. tostring(state.source.exactRemoteReferences)
+    lines[#lines + 1] = "Scanned source characters: " .. tostring(state.source.scannedChars)
+    lines[#lines + 1] = ""
     lines[#lines + 1] = "[ROOTS]"
     for _, root in ipairs(state.roots) do
         lines[#lines + 1] = string.format("%s: %d objects%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
@@ -171,7 +400,7 @@ local function buildSummary()
         end
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "[EXECUTOR CAPABILITY PRESENCE - NOT INVOKED]"
+    lines[#lines + 1] = "[EXECUTOR CAPABILITY PRESENCE]"
     for _, key in ipairs(sortedKeys(state.capabilities)) do
         lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
     end
@@ -200,7 +429,8 @@ local function buildSummary()
     lines[#lines + 1] = ""
     lines[#lines + 1] = "[LIMITATIONS]"
     lines[#lines + 1] = "Only client-visible/replicated information is included."
-    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, no scripts decompiled, and no connections inspected."
+    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, and no connections were inspected."
+    lines[#lines + 1] = "If SOURCE was run, decompiler output is reconstructed code and may differ from original Studio source."
     lines[#lines + 1] = "Potentially sensitive attribute values are redacted from exported reports."
     return table.concat(lines, "\n")
 end
@@ -223,9 +453,9 @@ end
 
 local function buildCoreMap()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.3 - CORE MAP",
+        "ROBLOX CLIENT SCANNER V1.4 - CORE MAP",
         "Core modules and network namespaces selected from observed client-visible architecture.",
-        "No module source was read or executed by this report.",
+        "SOURCE MAP is separate and only appears after ANALIZAR SOURCE.",
         "",
         "[NETWORK NAMESPACES]",
     }
@@ -251,15 +481,87 @@ local function buildCoreMap()
         lines[#lines + 1] = "None"
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "[CAPABILITIES DETECTED - NOT USED]"
+    lines[#lines + 1] = "[CAPABILITIES DETECTED]"
     for _, key in ipairs(sortedKeys(state.capabilities)) do
         lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
     end
     return table.concat(lines, "\n")
 end
 
+local function buildSourceMap()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.4 - SOURCE MAP",
+        "Read-only analysis of decompiler output for selected client-visible scripts/modules.",
+        "No ModuleScript was required and no remote was invoked.",
+        "Decompiler output is reconstructed and is not guaranteed to match original Studio source.",
+        "",
+        "[STATS]",
+        "Attempted: " .. tostring(state.source.attempted),
+        "Candidates selected: " .. tostring(#state.source.candidates),
+        "Decompile attempts: " .. tostring(state.source.attemptedCount),
+        "Decompiler returned source: " .. tostring(state.source.decompiledCount),
+        "Failures recorded: " .. tostring(#state.source.failures),
+        "Scanned source characters: " .. tostring(state.source.scannedChars),
+        "Exact observed remote references: " .. tostring(state.source.exactRemoteReferences),
+        "",
+        "[SCRIPT / MODULE RESULTS]",
+    }
+
+    for index, item in ipairs(state.source.results) do
+        lines[#lines + 1] = string.format("#%d [%s] %s", index, item.className, item.path)
+        lines[#lines + 1] = string.format(
+            "SourceChars: %d | ScannedChars: %d | Truncated: %s | require(: %d",
+            item.sourceChars,
+            item.scannedChars,
+            tostring(item.truncated),
+            item.requireCalls
+        )
+        if next(item.tokenCounts) ~= nil then
+            local tokenParts = {}
+            for _, token in ipairs(sortedKeys(item.tokenCounts)) do
+                tokenParts[#tokenParts + 1] = token .. "=" .. tostring(item.tokenCounts[token])
+            end
+            lines[#lines + 1] = "NetworkTokens: " .. table.concat(tokenParts, ", ")
+        end
+        lines[#lines + 1] = "ExactRemoteRefs: " .. tostring(#item.remoteRefs)
+        for _, ref in ipairs(item.remoteRefs) do
+            local hint = #ref.nearbyTokens > 0 and table.concat(ref.nearbyTokens, ",") or "none"
+            lines[#lines + 1] = "  - " .. ref.name
+            lines[#lines + 1] = "    RemotePath: " .. ref.path
+            lines[#lines + 1] = "    NearbyTokens: " .. hint
+            lines[#lines + 1] = "    Context: " .. ref.context
+        end
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[REMOTE -> SCRIPT/MODULE INDEX]"
+    for _, remoteName in ipairs(sortedKeys(state.source.remoteIndex)) do
+        lines[#lines + 1] = remoteName
+        local paths = state.source.remoteIndex[remoteName]
+        table.sort(paths)
+        for _, path in ipairs(paths) do
+            lines[#lines + 1] = "  <- " .. path
+        end
+    end
+    if next(state.source.remoteIndex) == nil then
+        lines[#lines + 1] = "No exact RE/RF string references were confirmed."
+    end
+
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[DECOMPILE FAILURES]"
+    if #state.source.failures == 0 then
+        lines[#lines + 1] = "None"
+    else
+        for _, failure in ipairs(state.source.failures) do
+            lines[#lines + 1] = "- " .. failure.path .. " :: " .. failure.error
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
 local function buildRemotes()
-    local lines = { "ROBLOX CLIENT SCANNER V1.3 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.4 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
     table.sort(state.remotes, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.remotes) do
         lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
@@ -273,7 +575,7 @@ local function buildRemotes()
 end
 
 local function buildModules()
-    local lines = { "ROBLOX CLIENT SCANNER V1.3 - MODULES", "Total: " .. tostring(#state.modules), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.4 - MODULES", "Total: " .. tostring(#state.modules), "" }
     table.sort(state.modules, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.modules) do
         lines[#lines + 1] = string.format("#%d [ModuleScript]", index)
@@ -285,7 +587,7 @@ local function buildModules()
 end
 
 local function buildScripts()
-    local lines = { "ROBLOX CLIENT SCANNER V1.3 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.4 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
     table.sort(state.scripts, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.scripts) do
         lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
@@ -307,7 +609,7 @@ end
 
 local function buildStructure()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.3 - STRUCTURE / METADATA",
+        "ROBLOX CLIENT SCANNER V1.4 - STRUCTURE / METADATA",
         "Folders/configurations are listed by full path; heavy visual asset subtrees are intentionally skipped.",
         "",
         "[ROOT CLASS SUMMARIES]",
