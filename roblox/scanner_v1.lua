@@ -1,7 +1,7 @@
--- Roblox Client Scanner V1.5 GUI loader
+-- Roblox Client Scanner V1.6 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
-local VERSION = "1.5.0"
-local CACHE_VERSION = "1.5.2"
+local VERSION = "1.6.0"
+local CACHE_VERSION = "1.6.0"
 local ORDER = {1, 2, 3, 4, 5}
 
 local function showError(message)
@@ -39,7 +39,7 @@ local function showError(message)
     title.Position = UDim2.new(0, 14, 0, 10)
     title.Size = UDim2.new(1, -28, 0, 28)
     title.Font = Enum.Font.GothamBold
-    title.Text = "SCANNER V1.5 - ERROR"
+    title.Text = "SCANNER V1.6 - ERROR"
     title.TextColor3 = Color3.fromRGB(255, 120, 120)
     title.TextSize = 15
     title.TextXAlignment = Enum.TextXAlignment.Left
