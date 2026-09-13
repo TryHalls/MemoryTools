@@ -55,11 +55,13 @@
     return table.concat(lines, "\n")
 end
 
-local function buildAll(summary, core, remotes, modules, scripts, structure)
+local function buildAll(summary, core, source, remotes, modules, scripts, structure)
     return table.concat({
         summary,
         "\n\n================ CORE MAP ================\n",
         core,
+        "\n\n================ SOURCE MAP ================\n",
+        source,
         "\n\n================ REMOTES ================\n",
         remotes,
         "\n\n================ MODULES ================\n",
@@ -74,6 +76,7 @@ end
 local function buildReports()
     local summary = buildSummary()
     local core = buildCoreMap()
+    local source = buildSourceMap()
     local remotes = buildRemotes()
     local modules = buildModules()
     local scripts = buildScripts()
@@ -81,11 +84,12 @@ local function buildReports()
     return {
         summary = summary,
         core = core,
+        source = source,
         remotes = remotes,
         modules = modules,
         scripts = scripts,
         structure = structure,
-        all = buildAll(summary, core, remotes, modules, scripts, structure),
+        all = buildAll(summary, core, source, remotes, modules, scripts, structure),
     }
 end
 
@@ -185,7 +189,7 @@ NextPart.MouseButton1Click:Connect(function()
     copyActiveChunk()
 end)
 
-local exportButtons = { CopySummary, CopyCore, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
+local exportButtons = { CopySummary, CopyCore, CopySource, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
 local function setExportsEnabled(enabled)
     for _, button in ipairs(exportButtons) do
         if enabled then
@@ -200,13 +204,29 @@ local function setExportsEnabled(enabled)
     end
 end
 
+local function setSourceButtonEnabled(enabled)
+    if enabled then
+        SourceScanButton.BackgroundColor3 = Color3.fromRGB(120, 82, 168)
+        SourceScanButton.TextColor3 = Color3.fromRGB(245, 247, 251)
+        SourceScanButton.AutoButtonColor = true
+    else
+        SourceScanButton.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+        SourceScanButton.TextColor3 = Color3.fromRGB(122, 128, 139)
+        SourceScanButton.AutoButtonColor = false
+    end
+end
+
 setExportsEnabled(false)
+setSourceButtonEnabled(false)
 
 CopySummary.MouseButton1Click:Connect(function()
     if reportData then exportCategory("Resumen", reportData.summary) end
 end)
 CopyCore.MouseButton1Click:Connect(function()
     if reportData then exportCategory("Core Map", reportData.core) end
+end)
+CopySource.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Source Map", reportData.source) end
 end)
 CopyRemotes.MouseButton1Click:Connect(function()
     if reportData then exportCategory("Remotes", reportData.remotes) end
@@ -239,8 +259,9 @@ local function compactTerminalSummary()
         "Interactions: " .. tostring(#state.interactions),
         "Heavy visual subtrees skipped: " .. tostring(#state.skippedHeavy),
         "",
-        "El reporte completo está guardado internamente.",
-        "Siguiente export recomendado: COPIAR CORE MAP.",
+        "Inventario listo.",
+        state.capabilities.decompile and "Siguiente paso: ANALIZAR SOURCE." or "decompile() no está disponible; SOURCE MAP no podrá analizar código.",
+        "SOURCE es read-only: no require(), no remotes, no getconnections().",
         "Los valores de atributos sensibles se exportan como [REDACTED].",
     }
     if #state.warnings > 0 then
@@ -251,8 +272,24 @@ local function compactTerminalSummary()
     return table.concat(lines, "\n")
 end
 
+local function compactSourceSummary()
+    return table.concat({
+        "[SOURCE COMPLETADO]",
+        "",
+        "Candidates: " .. tostring(#state.source.candidates),
+        "Decompile attempts: " .. tostring(state.source.attemptedCount),
+        "Decompiler returned source: " .. tostring(state.source.decompiledCount),
+        "Failures: " .. tostring(#state.source.failures),
+        "Source chars scanned: " .. tostring(state.source.scannedChars),
+        "Exact observed remote refs: " .. tostring(state.source.exactRemoteReferences),
+        "",
+        "Usa COPIAR SOURCE MAP y envíame ese reporte.",
+        "Las coincidencias de remote solo se reportan si el nombre RE/RF existe como Instance observada.",
+    }, "\n")
+end
+
 ScanButton.MouseButton1Click:Connect(function()
-    if running then
+    if running or sourceRunning then
         return
     end
 
@@ -264,11 +301,12 @@ ScanButton.MouseButton1Click:Connect(function()
     NextPart.Visible = false
     state = emptyState()
     setExportsEnabled(false)
+    setSourceButtonEnabled(false)
 
     ScanButton.Text = "ESCANEANDO..."
     ScanButton.AutoButtonColor = false
     setStatus("Preparando scanner...", 0)
-    terminalSet("[START] Scanner V1.3\n[INFO] Priorizando arquitectura, networking y estado. Subárboles visuales pesados se omiten deliberadamente.")
+    terminalSet("[START] Scanner V1.4\n[INFO] Inventario pasivo primero. SOURCE se ejecuta aparte y solo bajo petición del botón.")
 
     task.spawn(function()
         local ok, err = xpcall(function()
@@ -282,4 +320,4 @@ ScanButton.MouseButton1Click:Connect(function()
                 scanRoot(rootInfo, index, #roots)
             end
 
-            terminalAdd("[BUILD] Generando reportes y CORE MAP...")
+            terminalAdd("[BUILD] Generando reportes base y CORE MAP...")
