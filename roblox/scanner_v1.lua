@@ -1,6 +1,6 @@
--- Roblox Client Scanner V1.1 GUI loader
+-- Roblox Client Scanner V1.2 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
-local VERSION = "1.1.1"
+local VERSION = "1.2.0"
 
 local function showError(message)
     local Players = game:GetService("Players")
@@ -24,32 +24,32 @@ local function showError(message)
     gui.Parent = parent
 
     local frame = Instance.new("Frame")
-    frame.AnchorPoint = Vector2.new(.5,.5)
-    frame.Position = UDim2.fromScale(.5,.5)
-    frame.Size = UDim2.fromScale(.86,.38)
-    frame.BackgroundColor3 = Color3.fromRGB(24,26,31)
+    frame.AnchorPoint = Vector2.new(0.5, 0.5)
+    frame.Position = UDim2.fromScale(0.5, 0.5)
+    frame.Size = UDim2.fromScale(0.86, 0.38)
+    frame.BackgroundColor3 = Color3.fromRGB(24, 26, 31)
     frame.BorderSizePixel = 0
     frame.Parent = gui
-    Instance.new("UICorner",frame).CornerRadius = UDim.new(0,10)
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 10)
 
     local title = Instance.new("TextLabel")
     title.BackgroundTransparency = 1
-    title.Position = UDim2.new(0,14,0,10)
-    title.Size = UDim2.new(1,-28,0,28)
+    title.Position = UDim2.new(0, 14, 0, 10)
+    title.Size = UDim2.new(1, -28, 0, 28)
     title.Font = Enum.Font.GothamBold
-    title.Text = "SCANNER V1 - ERROR"
-    title.TextColor3 = Color3.fromRGB(255,120,120)
+    title.Text = "SCANNER V1.2 - ERROR"
+    title.TextColor3 = Color3.fromRGB(255, 120, 120)
     title.TextSize = 15
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Parent = frame
 
     local body = Instance.new("TextLabel")
     body.BackgroundTransparency = 1
-    body.Position = UDim2.new(0,14,0,45)
-    body.Size = UDim2.new(1,-28,1,-100)
+    body.Position = UDim2.new(0, 14, 0, 45)
+    body.Size = UDim2.new(1, -28, 1, -100)
     body.Font = Enum.Font.Code
     body.Text = tostring(message)
-    body.TextColor3 = Color3.fromRGB(225,228,235)
+    body.TextColor3 = Color3.fromRGB(225, 228, 235)
     body.TextSize = 12
     body.TextWrapped = true
     body.TextXAlignment = Enum.TextXAlignment.Left
@@ -57,21 +57,25 @@ local function showError(message)
     body.Parent = frame
 
     local copy = Instance.new("TextButton")
-    copy.AnchorPoint = Vector2.new(.5,1)
-    copy.Position = UDim2.new(.5,0,1,-12)
-    copy.Size = UDim2.new(1,-28,0,38)
-    copy.BackgroundColor3 = Color3.fromRGB(65,88,145)
+    copy.AnchorPoint = Vector2.new(0.5, 1)
+    copy.Position = UDim2.new(0.5, 0, 1, -12)
+    copy.Size = UDim2.new(1, -28, 0, 38)
+    copy.BackgroundColor3 = Color3.fromRGB(65, 88, 145)
     copy.BorderSizePixel = 0
     copy.Font = Enum.Font.GothamBold
     copy.Text = "COPIAR ERROR"
-    copy.TextColor3 = Color3.new(1,1,1)
+    copy.TextColor3 = Color3.new(1, 1, 1)
     copy.TextSize = 13
     copy.Parent = frame
-    Instance.new("UICorner",copy).CornerRadius = UDim.new(0,8)
+    Instance.new("UICorner", copy).CornerRadius = UDim.new(0, 8)
 
     copy.MouseButton1Click:Connect(function()
-        local f = type(setclipboard) == "function" and setclipboard or (type(toclipboard) == "function" and toclipboard or nil)
-        if f then pcall(function() f(tostring(message)) end) end
+        local clipboard = type(setclipboard) == "function" and setclipboard or (type(toclipboard) == "function" and toclipboard or nil)
+        if clipboard then
+            pcall(function()
+                clipboard(tostring(message))
+            end)
+        end
     end)
 end
 
