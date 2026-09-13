@@ -1,7 +1,7 @@
-local Status = makeLabel(Left, "Listo para iniciar.", 562, 54, false)
+local Status = makeLabel(Left, "Listo para iniciar.", 608, 54, false)
 
 local ProgressBack = Instance.new("Frame", Left)
-ProgressBack.Position = UDim2.new(0, 12, 0, 624)
+ProgressBack.Position = UDim2.new(0, 12, 0, 670)
 ProgressBack.Size = UDim2.new(1, -24, 0, 8)
 ProgressBack.BackgroundColor3 = Color3.fromRGB(42, 46, 55)
 ProgressBack.BorderSizePixel = 0
@@ -13,7 +13,7 @@ ProgressFill.BackgroundColor3 = Color3.fromRGB(91, 139, 231)
 ProgressFill.BorderSizePixel = 0
 Instance.new("UICorner", ProgressFill).CornerRadius = UDim.new(1, 0)
 
-makeLabel(Left, "Si una categoría supera el límite del portapapeles, se divide automáticamente. Usa SIGUIENTE PARTE para avanzar.", 650, 70, false)
+makeLabel(Left, "Los reportes grandes se dividen automáticamente. CORE MAP es el export prioritario para el siguiente análisis.", 696, 70, false)
 
 local TerminalHeader = Instance.new("TextLabel", Right)
 TerminalHeader.BackgroundColor3 = Color3.fromRGB(21, 24, 29)
@@ -41,7 +41,7 @@ Terminal.BackgroundTransparency = 1
 Terminal.Font = Enum.Font.Code
 Terminal.MultiLine = true
 Terminal.ClearTextOnFocus = false
-Terminal.Text = "[READY] Scanner V1.2 cargado.\nPulsa INICIAR SCAN para comenzar."
+Terminal.Text = "[READY] Scanner V1.3 cargado.\nPulsa INICIAR SCAN para comenzar."
 Terminal.TextColor3 = Color3.fromRGB(200, 205, 214)
 Terminal.TextSize = 12
 Terminal.TextWrapped = true
@@ -70,7 +70,6 @@ local function setStatus(text, progress)
     end
 end
 
--- Drag support for mouse/touch.
 local dragging = false
 local dragStart
 local startPosition
@@ -113,6 +112,18 @@ local activeChunks = nil
 local activeChunkIndex = 1
 local activeExportName = nil
 
+local function detectCapabilities()
+    return {
+        decompile = type(decompile) == "function",
+        getscriptbytecode = type(getscriptbytecode) == "function",
+        getconnections = type(getconnections) == "function",
+        getsenv = type(getsenv) == "function",
+        getgc = type(getgc) == "function",
+        getscriptclosure = type(getscriptclosure) == "function",
+        debugInfo = type(debug) == "table" and type(debug.info) == "function",
+    }
+end
+
 local function emptyState()
     return {
         total = 0,
@@ -120,6 +131,7 @@ local function emptyState()
         roots = {},
         remotes = {},
         modules = {},
+        coreModules = {},
         scripts = {},
         structure = {},
         metadata = {},
@@ -129,6 +141,8 @@ local function emptyState()
         gui = {},
         priority = {},
         warnings = {},
+        skippedHeavy = {},
+        capabilities = detectCapabilities(),
         classCounts = {},
         limits = {
             structure = false,
@@ -136,6 +150,7 @@ local function emptyState()
             values = false,
             gui = false,
             priority = false,
+            coreModules = false,
         },
     }
 end
@@ -183,13 +198,17 @@ local function inspectInstance(instance)
             tags = tags,
         }
     elseif instance:IsA("ModuleScript") then
-        state.modules[#state.modules + 1] = {
+        local record = {
             className = instance.ClassName,
             name = instance.Name,
             path = path,
             attributes = attributes,
             tags = tags,
         }
+        state.modules[#state.modules + 1] = record
+        if isCoreModulePath(path) then
+            addLimited(state.coreModules, record, "coreModules", CONFIG.MAX_CORE_MODULES)
+        end
     elseif instance:IsA("LocalScript") or instance:IsA("Script") then
         state.scripts[#state.scripts + 1] = {
             className = instance.ClassName,
