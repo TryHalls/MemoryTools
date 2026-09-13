@@ -1,11 +1,10 @@
--- Roblox Client Scanner V1.4
--- Focused architecture/networking reconnaissance plus opt-in passive source mapping.
+-- Roblox Client Scanner V1.5
+-- Focused passive inventory + targeted network source inspector.
 
-local VERSION = "1.4.0"
+local VERSION = "1.5.0"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local CollectionService = game:GetService("CollectionService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -18,31 +17,22 @@ end
 
 local CONFIG = {
     CHUNK_SIZE = 15000,
-    YIELD_EVERY = 120,
-    MAX_STRING = 260,
-    MAX_STRUCTURE_ENTRIES = 1800,
-    MAX_METADATA_ENTRIES = 1200,
-    MAX_GUI_ENTRIES = 900,
-    MAX_VALUE_ENTRIES = 900,
-    MAX_KEYWORD_HITS = 180,
-    MAX_CORE_MODULES = 280,
-    MAX_CHILDREN_PER_NODE = 700,
-    SOURCE_MAX_CANDIDATES = 80,
-    SOURCE_MAX_CHARS_PER_SCRIPT = 180000,
-    SOURCE_MAX_REMOTE_REFS_PER_SCRIPT = 80,
-    SOURCE_MAX_FAILURES = 80,
-    SOURCE_CONTEXT_RADIUS = 180,
+    YIELD_EVERY = 140,
+    MAX_STRING = 420,
+    MAX_CONTEXT_LINE = 260,
+    MAX_CALLS_PER_SCRIPT = 80,
+    MAX_REQUIRES_PER_SCRIPT = 50,
+    MAX_INTERESTING_LINES = 80,
+    MAX_ALIAS_LOOKBACK = 45,
+    CONTEXT_LINES_BEFORE = 2,
+    CONTEXT_LINES_AFTER = 3,
     ROOTS = {
         ReplicatedStorage = { maxDepth = 11, maxObjects = 14000 },
-        ReplicatedFirst = { maxDepth = 8, maxObjects = 2200 },
-        Workspace = { maxDepth = 6, maxObjects = 6500 },
-        Lighting = { maxDepth = 6, maxObjects = 1400 },
-        SoundService = { maxDepth = 7, maxObjects = 1600 },
-        Teams = { maxDepth = 5, maxObjects = 800 },
-        Character = { maxDepth = 8, maxObjects = 2200 },
-        Backpack = { maxDepth = 7, maxObjects = 1500 },
-        PlayerGui = { maxDepth = 9, maxObjects = 5000 },
-        PlayerScripts = { maxDepth = 9, maxObjects = 3200 },
+        Workspace = { maxDepth = 5, maxObjects = 5000 },
+        Character = { maxDepth = 8, maxObjects = 1800 },
+        Backpack = { maxDepth = 7, maxObjects = 1200 },
+        PlayerGui = { maxDepth = 8, maxObjects = 3500 },
+        PlayerScripts = { maxDepth = 10, maxObjects = 4000 },
     },
     HEAVY_REPLICATED_TOP_LEVEL = {
         AssetModels = true,
@@ -51,81 +41,32 @@ local CONFIG = {
     },
 }
 
-local PRIORITY_WORDS = {
-    "remote", "network", "request", "api", "event", "signal", "save", "data",
-    "config", "settings", "shop", "product", "gamepass", "currency", "purchase",
-    "buy", "equip", "inventory", "egg", "gear", "plot", "base", "area", "guard",
-    "treadmill", "reward", "gift", "fuse", "admin", "cmdr", "mutation", "rarity",
-    "profile", "replicator", "throttle", "rate", "token", "staff", "state",
+local TARGET_RULES = {
+    { label = "Networking", suffix = "replicatedstorage.packages.networking" },
+    { label = "Remotes", suffix = "replicatedstorage.shared.remotes" },
+    { label = "EggState", suffix = "replicatedstorage.client.eggstate" },
+    { label = "Save", suffix = "replicatedstorage.shared.save" },
+    { label = "PlotState", suffix = "replicatedstorage.client.plotstate" },
+    { label = "ReplicatorClient", suffix = "replicatedstorage.client.modules.replicatorclient" },
+    { label = "OfflineMoneyBucketPiles", suffix = ".playerscripts.game.plots.offlinemoney.offlinemoneybucketpiles" },
+    { label = "TreadmillStaticController", suffix = ".playerscripts.game.plots.treadmillstaticcontroller" },
+    { label = "GuardTutorialController", suffix = ".playerscripts.game.guardareas.guardtutorialcontroller" },
+    { label = "ForestGuardRuntime", suffix = ".playerscripts.game.guardareas.forestguardruntime" },
 }
 
-local CORE_PATTERNS = {
-    "packages.networking",
-    "shared.remotes",
-    "shared.save",
-    "shared.player",
-    "coreprofilemanager",
-    "defaultstats",
-    "ratelimiter",
-    "tokenbucket",
-    "actionthrottle",
-    "client.modules.replicatorclient",
-    "runtimeinstanceregistry",
-    "client.clientglobals",
-    "client.eggstate",
-    "client.plotstate",
-    "client.platformsignals",
-    "client.fusemachinesignals",
-    "client.sakurasignals",
-    "client.consolesignals",
-    "client.toolgameplayguard",
-    "shared.modules.staff",
-    "shared.util.toolcooldown",
-    "shared.util.walkspeedgovernor",
-    "shared.util.eggrecords",
-    "shared.util.assetearnings",
-    "shared.util.fusekernel",
-    "shared.util.shrinefusionrules",
-    "data.currency",
-    "data.gears",
-    "data.treadmills",
-    "data.guards",
-    "data.areas",
-    "data.bases",
-    "data.products",
-    "data.gamepasses",
+local NETWORK_TOKENS = {
+    "FireServer",
+    "InvokeServer",
+    "OnClientEvent",
+    "OnClientInvoke",
+    "OnServerEvent",
+    "OnServerInvoke",
 }
 
-local SOURCE_PATTERNS = {
-    { "replicatedstorage.packages.networking", 1000 },
-    { "replicatedstorage.shared.remotes", 990 },
-    { "replicatedstorage.shared.save", 980 },
-    { "replicatedstorage.shared.player", 970 },
-    { "coreprofilemanager", 960 },
-    { "replicatorclient", 950 },
-    { "runtimeinstanceregistry", 940 },
-    { "client.clientglobals", 930 },
-    { "client.eggstate", 920 },
-    { "client.plotstate", 910 },
-    { "toolgameplayguard", 900 },
-    { "ratelimiter", 890 },
-    { "tokenbucket", 880 },
-    { "actionthrottle", 870 },
-    { "shared.modules.staff", 860 },
-    { "toolcooldown", 850 },
-    { "walkspeedgovernor", 840 },
-    { "eggrecords", 830 },
-    { "assetearnings", 820 },
-    { "fusekernel", 810 },
-    { "shrinefusionrules", 800 },
-    { ".playerscripts.game.areaeggs.", 700 },
-    { ".playerscripts.game.plots.", 690 },
-    { ".playerscripts.game.guardareas.", 680 },
-    { ".playerscripts.game.adminabuseclient.", 650 },
-    { "replicatedstorage.client.fusemachine", 640 },
-    { "replicatedstorage.client.gifting", 630 },
-    { "replicatedstorage.client.shrinefusion", 620 },
-    { "replicatedstorage.shared.eggs.", 600 },
+local INTERESTING_KEYWORDS = {
+    "network", "remote", "findfirstchild", "waitforchild", "fireserver", "invokeserver",
+    "onclientevent", "onclientinvoke", "onserverevent", "onserverinvoke", "require(",
+    "remoteevent", "remotefunction", "replicatedstorage", "__replicatorinternal",
 }
 
 local function safeCall(callback, fallback)
@@ -136,108 +77,79 @@ local function safeCall(callback, fallback)
     return fallback
 end
 
-local function sanitize(value)
-    local text = tostring(value)
-    text = text:gsub("\r", "\\r"):gsub("\n", "\\n"):gsub("\t", "\\t")
-    if #text > CONFIG.MAX_STRING then
-        return text:sub(1, CONFIG.MAX_STRING) .. "...[TRUNCATED]"
-    end
-    return text
-end
-
 local function fullName(instance)
     return safeCall(function()
         return instance:GetFullName()
     end, instance and instance.Name or "unknown")
 end
 
+local function sanitize(value, limit)
+    local text = tostring(value)
+    text = text:gsub("\r", "\\r"):gsub("\n", "\\n"):gsub("\t", "\\t")
+    local maximum = limit or CONFIG.MAX_STRING
+    if #text > maximum then
+        return string.sub(text, 1, maximum) .. "...[TRUNCATED]"
+    end
+    return text
+end
+
+local function trim(text)
+    text = tostring(text or "")
+    text = text:gsub("^%s+", "")
+    text = text:gsub("%s+$", "")
+    return text
+end
+
+local function endsWith(text, suffix)
+    if #suffix > #text then
+        return false
+    end
+    return string.sub(text, #text - #suffix + 1) == suffix
+end
+
+local function splitLines(source)
+    local lines = {}
+    source = tostring(source or "")
+    if string.sub(source, -1) ~= "\n" then
+        source = source .. "\n"
+    end
+    for line in string.gmatch(source, "(.-)\n") do
+        lines[#lines + 1] = line
+    end
+    return lines
+end
+
+local function isSensitiveLiteral(value)
+    if #value < 28 then
+        return false
+    end
+    if string.find(value, "%s") then
+        return false
+    end
+    local compact = value:gsub("[%w%-%_%.]", "")
+    return #compact <= math.max(2, math.floor(#value * 0.08))
+end
+
+local function safeLiteral(value)
+    if isSensitiveLiteral(value) then
+        return "[REDACTED_LONG_LITERAL]"
+    end
+    return sanitize(value, 120)
+end
+
 local function getAttributes(instance)
-    local value = safeCall(function()
-        return instance:GetAttributes()
-    end, {})
-    return type(value) == "table" and value or {}
+    local attrs = safeCall(function() return instance:GetAttributes() end, {})
+    return type(attrs) == "table" and attrs or {}
 end
 
 local function getTags(instance)
-    local value = safeCall(function()
-        return CollectionService:GetTags(instance)
-    end, {})
-    return type(value) == "table" and value or {}
+    local tags = safeCall(function() return CollectionService:GetTags(instance) end, {})
+    return type(tags) == "table" and tags or {}
 end
 
-local function sortedKeys(tbl)
-    local result = {}
-    for key in pairs(tbl) do
-        result[#result + 1] = key
-    end
-    table.sort(result, function(a, b)
-        return tostring(a) < tostring(b)
-    end)
-    return result
-end
-
-local function serialize(value)
-    local kind = typeof(value)
-    if value == nil then
-        return "nil"
-    elseif kind == "string" then
-        return '"' .. sanitize(value) .. '"'
-    elseif kind == "number" or kind == "boolean" then
-        return tostring(value)
-    elseif kind == "Vector3" then
-        return string.format("Vector3(%.2f, %.2f, %.2f)", value.X, value.Y, value.Z)
-    elseif kind == "Vector2" then
-        return string.format("Vector2(%.2f, %.2f)", value.X, value.Y)
-    elseif kind == "CFrame" then
-        local p = value.Position
-        return string.format("CFrame(%.2f, %.2f, %.2f)", p.X, p.Y, p.Z)
-    elseif kind == "Color3" then
-        return string.format("Color3(%.3f, %.3f, %.3f)", value.R, value.G, value.B)
-    elseif kind == "EnumItem" then
-        return tostring(value)
-    elseif kind == "Instance" then
-        return fullName(value)
-    end
-    return sanitize(value)
-end
-
-local function hasPriorityWord(instance)
-    local name = string.lower(instance.Name or "")
-    for _, word in ipairs(PRIORITY_WORDS) do
-        if string.find(name, word, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function isCoreModulePath(path)
-    local lower = string.lower(path)
-    for _, pattern in ipairs(CORE_PATTERNS) do
-        if string.find(lower, pattern, 1, true) then
-            return true
-        end
-    end
-    if string.find(lower, ".playerscripts.game.", 1, true) then
-        return true
-    end
-    return false
-end
-
-local function sourcePriorityScore(path)
-    local lower = string.lower(path)
-    local best = 0
-    for _, entry in ipairs(SOURCE_PATTERNS) do
-        if string.find(lower, entry[1], 1, true) then
-            best = math.max(best, entry[2])
-        end
-    end
-    return best
-end
-
-local function isSensitiveAttributeKey(key)
+local function sensitiveAttributeKey(key)
     local lower = string.lower(tostring(key))
-    for _, word in ipairs({ "apikey", "api_key", "secret", "token", "password", "credential", "authkey", "accesskey" }) do
+    for _, word in ipairs({"apikey", "api_key", "secret", "token", "password", "credential", "authkey", "accesskey"}) do
         if string.find(lower, word, 1, true) then
             return true
         end
@@ -245,24 +157,20 @@ local function isSensitiveAttributeKey(key)
     return false
 end
 
-local function formatAttributes(attributes)
-    if next(attributes) == nil then
-        return nil
-    end
+local function formatMetadata(instance)
+    local attrs = getAttributes(instance)
+    local tags = getTags(instance)
     local parts = {}
-    for _, key in ipairs(sortedKeys(attributes)) do
-        local valueText = isSensitiveAttributeKey(key) and "[REDACTED]" or serialize(attributes[key])
-        parts[#parts + 1] = tostring(key) .. "=" .. valueText
+    for key, value in pairs(attrs) do
+        local rendered = sensitiveAttributeKey(key) and "[REDACTED]" or sanitize(value, 120)
+        parts[#parts + 1] = tostring(key) .. "=" .. rendered
+    end
+    table.sort(parts)
+    if #tags > 0 then
+        table.sort(tags)
+        parts[#parts + 1] = "Tags=" .. table.concat(tags, ",")
     end
     return table.concat(parts, "; ")
-end
-
-local function formatTags(tags)
-    if #tags == 0 then
-        return nil
-    end
-    table.sort(tags)
-    return table.concat(tags, ", ")
 end
 
 -- GUI -------------------------------------------------------------------------
@@ -274,9 +182,7 @@ local guiParent = safeCall(function()
 end, nil) or LocalPlayer:WaitForChild("PlayerGui")
 
 local oldGui = guiParent:FindFirstChild("RobloxScannerGUI")
-if oldGui then
-    oldGui:Destroy()
-end
+if oldGui then oldGui:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "RobloxScannerGUI"
@@ -293,14 +199,12 @@ Main.BackgroundColor3 = Color3.fromRGB(20, 22, 27)
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
-
 local mainStroke = Instance.new("UIStroke", Main)
 mainStroke.Color = Color3.fromRGB(73, 80, 94)
 mainStroke.Thickness = 1
-
 local sizeConstraint = Instance.new("UISizeConstraint", Main)
 sizeConstraint.MinSize = Vector2.new(350, 380)
-sizeConstraint.MaxSize = Vector2.new(1150, 800)
+sizeConstraint.MaxSize = Vector2.new(1150, 820)
 
 local Topbar = Instance.new("Frame", Main)
 Topbar.Size = UDim2.new(1, 0, 0, 44)
@@ -311,90 +215,3 @@ local Title = Instance.new("TextLabel", Topbar)
 Title.BackgroundTransparency = 1
 Title.Position = UDim2.new(0, 14, 0, 0)
 Title.Size = UDim2.new(1, -60, 1, 0)
-Title.Font = Enum.Font.GothamBold
-Title.Text = "ROBLOX CLIENT SCANNER • V" .. VERSION
-Title.TextColor3 = Color3.fromRGB(238, 241, 247)
-Title.TextSize = 15
-Title.TextXAlignment = Enum.TextXAlignment.Left
-
-local Close = Instance.new("TextButton", Topbar)
-Close.AnchorPoint = Vector2.new(1, 0.5)
-Close.Position = UDim2.new(1, -10, 0.5, 0)
-Close.Size = UDim2.fromOffset(32, 28)
-Close.BackgroundColor3 = Color3.fromRGB(47, 51, 61)
-Close.BorderSizePixel = 0
-Close.Font = Enum.Font.GothamBold
-Close.Text = "×"
-Close.TextColor3 = Color3.new(1, 1, 1)
-Close.TextSize = 20
-Instance.new("UICorner", Close).CornerRadius = UDim.new(0, 7)
-
-local Content = Instance.new("Frame", Main)
-Content.BackgroundTransparency = 1
-Content.Position = UDim2.new(0, 10, 0, 54)
-Content.Size = UDim2.new(1, -20, 1, -64)
-
-local Left = Instance.new("ScrollingFrame", Content)
-Left.Size = UDim2.new(0.34, -5, 1, 0)
-Left.BackgroundColor3 = Color3.fromRGB(26, 29, 35)
-Left.BorderSizePixel = 0
-Left.ScrollBarThickness = 4
-Left.CanvasSize = UDim2.new(0, 0, 0, 910)
-Instance.new("UICorner", Left).CornerRadius = UDim.new(0, 9)
-
-local Right = Instance.new("Frame", Content)
-Right.Position = UDim2.new(0.34, 5, 0, 0)
-Right.Size = UDim2.new(0.66, -5, 1, 0)
-Right.BackgroundColor3 = Color3.fromRGB(13, 15, 18)
-Right.BorderSizePixel = 0
-Instance.new("UICorner", Right).CornerRadius = UDim.new(0, 9)
-
-local function makeLabel(parent, text, y, height, bold)
-    local label = Instance.new("TextLabel", parent)
-    label.BackgroundTransparency = 1
-    label.Position = UDim2.new(0, 12, 0, y)
-    label.Size = UDim2.new(1, -24, 0, height)
-    label.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-    label.Text = text
-    label.TextColor3 = bold and Color3.fromRGB(230, 233, 239) or Color3.fromRGB(155, 162, 175)
-    label.TextSize = bold and 13 or 11
-    label.TextWrapped = true
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    return label
-end
-
-makeLabel(Left, "CONTROLES", 12, 22, true)
-makeLabel(Left, "V1.4 mantiene el inventario pasivo y añade un análisis SOURCE separado. SOURCE solo decompila candidatos núcleo; no ejecuta módulos ni remotes.", 42, 70, false)
-
-local function makeButton(text, y, color)
-    local button = Instance.new("TextButton", Left)
-    button.Position = UDim2.new(0, 12, 0, y)
-    button.Size = UDim2.new(1, -24, 0, 40)
-    button.BackgroundColor3 = color or Color3.fromRGB(55, 92, 168)
-    button.BorderSizePixel = 0
-    button.Font = Enum.Font.GothamBold
-    button.Text = text
-    button.TextColor3 = Color3.fromRGB(245, 247, 251)
-    button.TextSize = 12
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 8)
-    return button
-end
-
-local ScanButton = makeButton("INICIAR SCAN", 122)
-local SourceScanButton = makeButton("ANALIZAR SOURCE", 168, Color3.fromRGB(52, 56, 66))
-SourceScanButton.AutoButtonColor = false
-SourceScanButton.TextColor3 = Color3.fromRGB(122, 128, 139)
-makeLabel(Left, "EXPORTAR", 224, 20, true)
-local CopySummary = makeButton("COPIAR RESUMEN", 250, Color3.fromRGB(52, 56, 66))
-local CopyCore = makeButton("COPIAR CORE MAP", 296, Color3.fromRGB(52, 56, 66))
-local CopySource = makeButton("COPIAR SOURCE MAP", 342, Color3.fromRGB(52, 56, 66))
-local CopyRemotes = makeButton("COPIAR REMOTES", 388, Color3.fromRGB(52, 56, 66))
-local CopyModules = makeButton("COPIAR MÓDULOS", 434, Color3.fromRGB(52, 56, 66))
-local CopyScripts = makeButton("COPIAR SCRIPTS", 480, Color3.fromRGB(52, 56, 66))
-local CopyStructure = makeButton("COPIAR ESTRUCTURA", 526, Color3.fromRGB(52, 56, 66))
-local CopyAll = makeButton("COPIAR TODO", 572, Color3.fromRGB(52, 56, 66))
-local NextPart = makeButton("SIGUIENTE PARTE", 618, Color3.fromRGB(80, 73, 124))
-NextPart.Visible = false
-
-makeLabel(Left, "ESTADO", 674, 20, true)
