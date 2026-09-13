@@ -1,6 +1,6 @@
--- Roblox Client Scanner V1.2 GUI loader
+-- Roblox Client Scanner V1.3 GUI loader
 local BASE = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/scanner_v1_parts/part"
-local VERSION = "1.2.0"
+local VERSION = "1.3.0"
 
 local function showError(message)
     local Players = game:GetService("Players")
@@ -37,7 +37,7 @@ local function showError(message)
     title.Position = UDim2.new(0, 14, 0, 10)
     title.Size = UDim2.new(1, -28, 0, 28)
     title.Font = Enum.Font.GothamBold
-    title.Text = "SCANNER V1.2 - ERROR"
+    title.Text = "SCANNER V1.3 - ERROR"
     title.TextColor3 = Color3.fromRGB(255, 120, 120)
     title.TextSize = 15
     title.TextXAlignment = Enum.TextXAlignment.Left
