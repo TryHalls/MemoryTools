@@ -1,323 +1,216 @@
-        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
-        lines[#lines + 1] = "DirectChildren: " .. tostring(item.childCount)
-        if next(item.childClasses) ~= nil then
-            lines[#lines + 1] = "ChildClasses: " .. formatClassCounts(item.childClasses)
-        end
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[ATTRIBUTES / TAGS]"
-    table.sort(state.metadata, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.metadata) do
-        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
-        appendMetadataLines(lines, item)
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[VALUES]"
-    table.sort(state.values, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.values) do
-        lines[#lines + 1] = string.format("[%s] %s = %s", item.className, item.path, serialize(item.value))
-    end
-
-    lines[#lines + 1] = ""
-    lines[#lines + 1] = "[TOOLS]"
-    table.sort(state.tools, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.tools) do
-        lines[#lines + 1] = "Path: " .. item.path
-        lines[#lines + 1] = "ToolTip: " .. sanitize(item.tooltip)
-        lines[#lines + 1] = "RequiresHandle: " .. tostring(item.requiresHandle)
-        lines[#lines + 1] = "CanBeDropped: " .. tostring(item.canBeDropped)
-        appendMetadataLines(lines, item)
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[INTERACTIONS]"
-    table.sort(state.interactions, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.interactions) do
-        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
-        if item.actionText ~= nil then lines[#lines + 1] = "ActionText: " .. sanitize(item.actionText) end
-        if item.objectText ~= nil then lines[#lines + 1] = "ObjectText: " .. sanitize(item.objectText) end
-        if item.maxDistance ~= nil then lines[#lines + 1] = "MaxDistance: " .. tostring(item.maxDistance) end
-        if item.holdDuration ~= nil then lines[#lines + 1] = "HoldDuration: " .. tostring(item.holdDuration) end
-        lines[#lines + 1] = ""
-    end
-
-    lines[#lines + 1] = "[GUI ENTRYPOINTS / INTERACTIVE CONTROLS]"
-    table.sort(state.gui, function(a, b) return a.path < b.path end)
-    for _, item in ipairs(state.gui) do
-        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
-        if item.text and item.text ~= "" then
-            lines[#lines + 1] = "Text: " .. sanitize(item.text)
+                out[#out + 1] = rendered
+                if #out >= CONFIG.MAX_INTERESTING_LINES then break end
+            end
         end
     end
-
-    return table.concat(lines, "\n")
+    return out
 end
 
-local function buildAll(summary, core, source, remotes, modules, scripts, structure)
-    return table.concat({
-        summary,
-        "\n\n================ CORE MAP ================\n",
-        core,
-        "\n\n================ SOURCE MAP ================\n",
-        source,
-        "\n\n================ REMOTES ================\n",
-        remotes,
-        "\n\n================ MODULES ================\n",
-        modules,
-        "\n\n================ SCRIPTS ================\n",
-        scripts,
-        "\n\n================ STRUCTURE ================\n",
-        structure,
-    })
-end
-
-local function buildReports()
-    local summary = buildSummary()
-    local core = buildCoreMap()
-    local source = buildSourceMap()
-    local remotes = buildRemotes()
-    local modules = buildModules()
-    local scripts = buildScripts()
-    local structure = buildStructure()
-    return {
-        summary = summary,
-        core = core,
-        source = source,
-        remotes = remotes,
-        modules = modules,
-        scripts = scripts,
-        structure = structure,
-        all = buildAll(summary, core, source, remotes, modules, scripts, structure),
-    }
-end
-
-local function splitText(text, maxLength)
-    local chunks = {}
-    local cursor = 1
-    local totalLength = #text
-
-    while cursor <= totalLength do
-        local finish = math.min(cursor + maxLength - 1, totalLength)
-        if finish < totalLength then
-            local candidate = string.sub(text, cursor, finish)
-            local lastNewline = nil
-            for index = #candidate, 1, -1 do
-                if string.sub(candidate, index, index) == "\n" then
-                    lastNewline = index
-                    break
+local function extractCallSites(lines)
+    local calls = {}
+    for lineNumber, line in ipairs(lines) do
+        for _, token in ipairs(NETWORK_TOKENS) do
+            if string.find(line, token, 1, true) then
+                local receiver = callReceiver(line, token)
+                local context = contextBlock(lines, lineNumber)
+                local literals = extractQuotedLiterals(context)
+                calls[#calls + 1] = {
+                    token = token,
+                    line = lineNumber,
+                    receiver = receiver,
+                    aliasOrigin = findAliasOrigin(lines, lineNumber, receiver),
+                    literals = literals,
+                    context = context,
+                }
+                if #calls >= CONFIG.MAX_CALLS_PER_SCRIPT then
+                    return calls
                 end
             end
-            if lastNewline and lastNewline > math.floor(maxLength * 0.65) then
-                finish = cursor + lastNewline - 2
-            end
-        end
-
-        chunks[#chunks + 1] = string.sub(text, cursor, finish)
-        cursor = finish + 1
-    end
-
-    if #chunks == 0 then
-        chunks[1] = ""
-    end
-    return chunks
-end
-
-local function clipboardFunction()
-    if type(setclipboard) == "function" then
-        return setclipboard
-    end
-    if type(toclipboard) == "function" then
-        return toclipboard
-    end
-    return nil
-end
-
-local function copyActiveChunk()
-    if not activeChunks then
-        return
-    end
-
-    local copy = clipboardFunction()
-    if not copy then
-        setStatus("Portapapeles no disponible. El contenido se mostró en terminal.")
-        terminalSet(activeChunks[activeChunkIndex])
-        return
-    end
-
-    local ok, err = pcall(function()
-        copy(activeChunks[activeChunkIndex])
-    end)
-
-    if ok then
-        local label = string.format("%s • parte %d/%d copiada", activeExportName or "Reporte", activeChunkIndex, #activeChunks)
-        setStatus(label)
-        terminalSet(
-            "[COPIADO]\n" .. label .. "\n\n" ..
-            "Caracteres en esta parte: " .. tostring(#activeChunks[activeChunkIndex]) .. "\n" ..
-            "Usa SIGUIENTE PARTE si hay más bloques."
-        )
-        NextPart.Visible = #activeChunks > 1
-        if #activeChunks > 1 then
-            NextPart.Text = string.format("SIGUIENTE PARTE (%d/%d)", activeChunkIndex, #activeChunks)
-        end
-    else
-        setStatus("Error copiando al portapapeles")
-        terminalSet("[ERROR] No se pudo copiar:\n" .. tostring(err))
-    end
-end
-
-local function exportCategory(name, text)
-    if not reportData then
-        return
-    end
-    activeExportName = name
-    activeChunks = splitText(text, CONFIG.CHUNK_SIZE)
-    activeChunkIndex = 1
-    copyActiveChunk()
-end
-
-NextPart.MouseButton1Click:Connect(function()
-    if not activeChunks or #activeChunks <= 1 then
-        return
-    end
-    activeChunkIndex = activeChunkIndex + 1
-    if activeChunkIndex > #activeChunks then
-        activeChunkIndex = 1
-    end
-    copyActiveChunk()
-end)
-
-local exportButtons = { CopySummary, CopyCore, CopySource, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
-local function setExportsEnabled(enabled)
-    for _, button in ipairs(exportButtons) do
-        if enabled then
-            button.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
-            button.TextColor3 = Color3.fromRGB(245, 247, 251)
-            button.AutoButtonColor = true
-        else
-            button.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
-            button.TextColor3 = Color3.fromRGB(122, 128, 139)
-            button.AutoButtonColor = false
         end
     end
+    return calls
 end
 
-local function setSourceButtonEnabled(enabled)
-    if enabled then
-        SourceScanButton.BackgroundColor3 = Color3.fromRGB(120, 82, 168)
-        SourceScanButton.TextColor3 = Color3.fromRGB(245, 247, 251)
-        SourceScanButton.AutoButtonColor = true
-    else
-        SourceScanButton.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
-        SourceScanButton.TextColor3 = Color3.fromRGB(122, 128, 139)
-        SourceScanButton.AutoButtonColor = false
+local function analyseTarget(target)
+    local record = target.record
+    local ok, sourceOrError = pcall(function() return decompile(record.instance) end)
+    if not ok or type(sourceOrError) ~= "string" or sourceOrError == "" then
+        state.source.failures[#state.source.failures + 1] = target.label .. " :: " .. sanitize(sourceOrError or "no source")
+        return nil
     end
-end
-
-setExportsEnabled(false)
-setSourceButtonEnabled(false)
-
-CopySummary.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Resumen", reportData.summary) end
-end)
-CopyCore.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Core Map", reportData.core) end
-end)
-CopySource.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Source Map", reportData.source) end
-end)
-CopyRemotes.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Remotes", reportData.remotes) end
-end)
-CopyModules.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Módulos", reportData.modules) end
-end)
-CopyScripts.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Scripts", reportData.scripts) end
-end)
-CopyStructure.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Estructura", reportData.structure) end
-end)
-CopyAll.MouseButton1Click:Connect(function()
-    if reportData then exportCategory("Todo", reportData.all) end
-end)
-
-local function compactTerminalSummary()
-    local lines = {
-        "[SCAN COMPLETADO]",
-        "",
-        "Objects scanned: " .. tostring(state.total),
-        "Remotes: " .. tostring(#state.remotes),
-        "Modules: " .. tostring(#state.modules),
-        "Core modules: " .. tostring(#state.coreModules),
-        "Scripts: " .. tostring(#state.scripts),
-        "Folders/Configurations: " .. tostring(#state.structure),
-        "Metadata entries: " .. tostring(#state.metadata),
-        "Tools: " .. tostring(#state.tools),
-        "Interactions: " .. tostring(#state.interactions),
-        "Heavy visual subtrees skipped: " .. tostring(#state.skippedHeavy),
-        "",
-        "Inventario listo.",
-        state.capabilities.decompile and "Siguiente paso: ANALIZAR SOURCE." or "decompile() no está disponible; SOURCE MAP no podrá analizar código.",
-        "SOURCE es read-only: no require(), no remotes, no getconnections().",
-        "Los valores de atributos sensibles se exportan como [REDACTED].",
+    local source = sourceOrError
+    state.source.sourceChars = state.source.sourceChars + #source
+    local lines = splitLines(source)
+    local requires = extractRequireLines(lines)
+    local calls = extractCallSites(lines)
+    local interesting = extractInterestingLines(lines)
+    state.source.totalRequires = state.source.totalRequires + #requires
+    state.source.totalCalls = state.source.totalCalls + #calls
+    if target.label == "Networking" or target.label == "Remotes" then
+        state.source.coreSource[target.label] = source
+    end
+    return {
+        label = target.label,
+        className = record.className,
+        path = record.path,
+        sourceChars = #source,
+        lineCount = #lines,
+        requires = requires,
+        calls = calls,
+        interesting = interesting,
     }
-    if #state.warnings > 0 then
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = "Warnings: " .. tostring(#state.warnings)
-        lines[#lines + 1] = "Copia RESUMEN para verlos."
+end
+
+local function runNetworkSourceAnalysis()
+    state.source = emptySourceState()
+    state.source.attempted = true
+    if type(decompile) ~= "function" then
+        state.source.failures[#state.source.failures + 1] = "decompile() unavailable"
+        return false, "decompile() no está disponible"
+    end
+    local targets = selectTargets()
+    terminalSet("[NETWORK SOURCE] V1.5\n[INFO] Solo análisis estático de módulos objetivo. No require(), no remotes, no getconnections().")
+    for index, target in ipairs(targets) do
+        setStatus(string.format("NETWORK SOURCE %d/%d • %s", index, #targets, target.label), #targets > 0 and (index - 1) / #targets or 0)
+        terminalAdd(string.format("[SOURCE] %d/%d %s", index, #targets, target.record.path))
+        local result = analyseTarget(target)
+        if result then state.source.results[#state.source.results + 1] = result end
+        task.wait()
+    end
+    setStatus("NETWORK SOURCE completado", 1)
+    return true
+end
+
+-- Reports ---------------------------------------------------------------------
+
+local function buildSummary()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.5 - SUMMARY",
+        "Version: " .. VERSION,
+        "PlaceId: " .. tostring(game.PlaceId),
+        "GameId: " .. tostring(game.GameId),
+        "PlaceVersion: " .. tostring(safeCall(function() return game.PlaceVersion end, "unavailable")),
+        "Workspace.StreamingEnabled: " .. tostring(safeCall(function() return Workspace.StreamingEnabled end, "unavailable")),
+        "LocalPlayer: " .. LocalPlayer.Name .. " (" .. tostring(LocalPlayer.UserId) .. ")",
+        "",
+        "[COUNTS]",
+        "Objects scanned: " .. tostring(state.total),
+        "RemoteEvents: " .. tostring(state.classCounts.RemoteEvent or 0),
+        "RemoteFunctions: " .. tostring(state.classCounts.RemoteFunction or 0),
+        "ModuleScripts: " .. tostring(state.classCounts.ModuleScript or 0),
+        "LocalScripts: " .. tostring(state.classCounts.LocalScript or 0),
+        "",
+        "[NETWORK SOURCE]",
+        "Attempted: " .. tostring(state.source.attempted),
+        "Targets found: " .. tostring(#state.source.targets),
+        "Targets missing: " .. tostring(#state.source.missingTargets),
+        "Results: " .. tostring(#state.source.results),
+        "Call-sites extracted: " .. tostring(state.source.totalCalls),
+        "Require lines extracted: " .. tostring(state.source.totalRequires),
+        "Source chars inspected: " .. tostring(state.source.sourceChars),
+        "",
+        "[CAPABILITIES DETECTED]",
+        "decompile: " .. tostring(state.capabilities.decompile),
+        "getconnections: " .. tostring(state.capabilities.getconnections),
+        "getgc: " .. tostring(state.capabilities.getgc),
+        "getsenv: " .. tostring(state.capabilities.getsenv),
+        "",
+        "[ROOTS]",
+    }
+    for _, root in ipairs(state.roots) do
+        lines[#lines + 1] = string.format("%s: %d%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[WARNINGS]"
+    if #state.warnings == 0 then lines[#lines + 1] = "None" else
+        for _, warning in ipairs(state.warnings) do lines[#lines + 1] = "- " .. warning end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[LIMITATIONS]"
+    lines[#lines + 1] = "Client-visible information only."
+    lines[#lines + 1] = "No remote was invoked, no ModuleScript was required, and no connection was inspected."
+    lines[#lines + 1] = "Decompiler output is reconstructed and may differ from original Studio source."
+    return table.concat(lines, "\n")
+end
+
+local function buildTargetsReport()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.5 - TARGETS",
+        "Targeted modules/scripts selected from V1.4 evidence.",
+        "",
+        "[FOUND]",
+    }
+    for index, target in ipairs(state.source.targets) do
+        lines[#lines + 1] = string.format("#%d %s", index, target.label)
+        lines[#lines + 1] = "Path: " .. target.record.path
+        lines[#lines + 1] = "Class: " .. target.record.className
+        local meta = formatMetadata(target.record.instance)
+        if meta ~= "" then lines[#lines + 1] = "Metadata: " .. meta end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[MISSING]"
+    if #state.source.missingTargets == 0 then lines[#lines + 1] = "None" else
+        for _, missing in ipairs(state.source.missingTargets) do lines[#lines + 1] = "- " .. missing end
     end
     return table.concat(lines, "\n")
 end
 
-local function compactSourceSummary()
-    return table.concat({
-        "[SOURCE COMPLETADO]",
+local function buildNetworkMap()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.5 - NETWORK MAP",
+        "Static snippets from selected decompiled client-visible code.",
+        "No module was required and no remote was invoked.",
+        "AliasOrigin is a backwards textual assignment search, not proof of runtime identity.",
         "",
-        "Candidates: " .. tostring(#state.source.candidates),
-        "Decompile attempts: " .. tostring(state.source.attemptedCount),
-        "Decompiler returned source: " .. tostring(state.source.decompiledCount),
-        "Failures: " .. tostring(#state.source.failures),
-        "Source chars scanned: " .. tostring(state.source.scannedChars),
-        "Exact observed remote refs: " .. tostring(state.source.exactRemoteReferences),
+        "[STATS]",
+        "Targets: " .. tostring(#state.source.targets),
+        "Results: " .. tostring(#state.source.results),
+        "Call-sites: " .. tostring(state.source.totalCalls),
+        "Require lines: " .. tostring(state.source.totalRequires),
+        "Source chars: " .. tostring(state.source.sourceChars),
         "",
-        "Usa COPIAR SOURCE MAP y envíame ese reporte.",
-        "Las coincidencias de remote solo se reportan si el nombre RE/RF existe como Instance observada.",
-    }, "\n")
+    }
+    for index, result in ipairs(state.source.results) do
+        lines[#lines + 1] = string.format("========== #%d %s ==========", index, result.label)
+        lines[#lines + 1] = "Path: " .. result.path
+        lines[#lines + 1] = string.format("Class: %s | SourceChars: %d | Lines: %d", result.className, result.sourceChars, result.lineCount)
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "[REQUIRES]"
+        if #result.requires == 0 then lines[#lines + 1] = "None" else
+            for _, entry in ipairs(result.requires) do lines[#lines + 1] = entry end
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "[NETWORK CALL-SITES]"
+        if #result.calls == 0 then lines[#lines + 1] = "None" else
+            for callIndex, call in ipairs(result.calls) do
+                lines[#lines + 1] = string.format("CALL #%d %s @ L%d", callIndex, call.token, call.line)
+                lines[#lines + 1] = "Receiver: " .. tostring(call.receiver or "unresolved")
+                lines[#lines + 1] = "AliasOrigin: " .. tostring(call.aliasOrigin or "not found in lookback")
+                if #call.literals > 0 then
+                    lines[#lines + 1] = "NearbyLiterals: " .. table.concat(call.literals, " | ")
+                end
+                lines[#lines + 1] = "Context: " .. call.context
+            end
+        end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "[INTERESTING LINES]"
+        if #result.interesting == 0 then lines[#lines + 1] = "None" else
+            for _, entry in ipairs(result.interesting) do lines[#lines + 1] = entry end
+        end
+        lines[#lines + 1] = ""
+    end
+    lines[#lines + 1] = "[FAILURES]"
+    if #state.source.failures == 0 then lines[#lines + 1] = "None" else
+        for _, failure in ipairs(state.source.failures) do lines[#lines + 1] = "- " .. failure end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[MISSING TARGETS]"
+    if #state.source.missingTargets == 0 then lines[#lines + 1] = "None" else
+        for _, missing in ipairs(state.source.missingTargets) do lines[#lines + 1] = "- " .. missing end
+    end
+    return table.concat(lines, "\n")
 end
 
-ScanButton.MouseButton1Click:Connect(function()
-    if running or sourceRunning then
-        return
-    end
-
-    running = true
-    reportData = nil
-    activeChunks = nil
-    activeChunkIndex = 1
-    activeExportName = nil
-    NextPart.Visible = false
-    state = emptyState()
-    setExportsEnabled(false)
-    setSourceButtonEnabled(false)
-
-    ScanButton.Text = "ESCANEANDO..."
-    ScanButton.AutoButtonColor = false
-    setStatus("Preparando scanner...", 0)
-    terminalSet("[START] Scanner V1.4\n[INFO] Inventario pasivo primero. SOURCE se ejecuta aparte y solo bajo petición del botón.")
-
-    task.spawn(function()
-        local ok, err = xpcall(function()
-            local streaming = safeCall(function() return Workspace.StreamingEnabled end, "unavailable")
-            if streaming == true then
-                state.warnings[#state.warnings + 1] = "Workspace.StreamingEnabled=true; Workspace visible may be incomplete"
-            end
-
-            local roots = getRoots()
-            for index, rootInfo in ipairs(roots) do
-                scanRoot(rootInfo, index, #roots)
-            end
-
-            terminalAdd("[BUILD] Generando reportes base y CORE MAP...")
+local function buildCoreSource()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.5 - CORE SOURCE",
