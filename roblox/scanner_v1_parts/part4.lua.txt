@@ -55,9 +55,11 @@
     return table.concat(lines, "\n")
 end
 
-local function buildAll(summary, remotes, modules, scripts, structure)
+local function buildAll(summary, core, remotes, modules, scripts, structure)
     return table.concat({
         summary,
+        "\n\n================ CORE MAP ================\n",
+        core,
         "\n\n================ REMOTES ================\n",
         remotes,
         "\n\n================ MODULES ================\n",
@@ -71,17 +73,19 @@ end
 
 local function buildReports()
     local summary = buildSummary()
+    local core = buildCoreMap()
     local remotes = buildRemotes()
     local modules = buildModules()
     local scripts = buildScripts()
     local structure = buildStructure()
     return {
         summary = summary,
+        core = core,
         remotes = remotes,
         modules = modules,
         scripts = scripts,
         structure = structure,
-        all = buildAll(summary, remotes, modules, scripts, structure),
+        all = buildAll(summary, core, remotes, modules, scripts, structure),
     }
 end
 
@@ -181,7 +185,7 @@ NextPart.MouseButton1Click:Connect(function()
     copyActiveChunk()
 end)
 
-local exportButtons = { CopySummary, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
+local exportButtons = { CopySummary, CopyCore, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
 local function setExportsEnabled(enabled)
     for _, button in ipairs(exportButtons) do
         if enabled then
@@ -200,6 +204,9 @@ setExportsEnabled(false)
 
 CopySummary.MouseButton1Click:Connect(function()
     if reportData then exportCategory("Resumen", reportData.summary) end
+end)
+CopyCore.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Core Map", reportData.core) end
 end)
 CopyRemotes.MouseButton1Click:Connect(function()
     if reportData then exportCategory("Remotes", reportData.remotes) end
@@ -224,15 +231,17 @@ local function compactTerminalSummary()
         "Objects scanned: " .. tostring(state.total),
         "Remotes: " .. tostring(#state.remotes),
         "Modules: " .. tostring(#state.modules),
+        "Core modules: " .. tostring(#state.coreModules),
         "Scripts: " .. tostring(#state.scripts),
         "Folders/Configurations: " .. tostring(#state.structure),
         "Metadata entries: " .. tostring(#state.metadata),
         "Tools: " .. tostring(#state.tools),
         "Interactions: " .. tostring(#state.interactions),
+        "Heavy visual subtrees skipped: " .. tostring(#state.skippedHeavy),
         "",
         "El reporte completo está guardado internamente.",
-        "Usa los botones de EXPORTAR para copiarlo por categorías.",
-        "COPIAR TODO se dividirá en partes de hasta " .. tostring(CONFIG.CHUNK_SIZE) .. " caracteres.",
+        "Siguiente export recomendado: COPIAR CORE MAP.",
+        "Los valores de atributos sensibles se exportan como [REDACTED].",
     }
     if #state.warnings > 0 then
         lines[#lines + 1] = ""
@@ -259,7 +268,7 @@ ScanButton.MouseButton1Click:Connect(function()
     ScanButton.Text = "ESCANEANDO..."
     ScanButton.AutoButtonColor = false
     setStatus("Preparando scanner...", 0)
-    terminalSet("[START] Scanner V1.2\n[INFO] Recolectando arquitectura relevante sin enumerar assets físicos individualmente.")
+    terminalSet("[START] Scanner V1.3\n[INFO] Priorizando arquitectura, networking y estado. Subárboles visuales pesados se omiten deliberadamente.")
 
     task.spawn(function()
         local ok, err = xpcall(function()
@@ -273,4 +282,4 @@ ScanButton.MouseButton1Click:Connect(function()
                 scanRoot(rootInfo, index, #roots)
             end
 
-            terminalAdd("[BUILD] Generando reportes por categorías...")
+            terminalAdd("[BUILD] Generando reportes y CORE MAP...")
