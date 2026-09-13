@@ -1,0 +1,34 @@
+local V="1.1.0"
+local P=game:GetService("Players")
+local RS=game:GetService("ReplicatedStorage")
+local RF=game:GetService("ReplicatedFirst")
+local CS=game:GetService("CollectionService")
+local WS=game:GetService("Workspace")
+local UIS=game:GetService("UserInputService")
+local LP=P.LocalPlayer
+if not LP then repeat task.wait() until P.LocalPlayer;LP=P.LocalPlayer end
+
+local C={MAX=500000,STR=240,YIELD=120,CHILD=180,L={
+ ReplicatedStorage={8,4500},ReplicatedFirst={7,1200},Workspace={6,5000},Lighting={5,900},SoundService={6,900},Teams={5,500},StarterGui={7,1600},StarterPlayer={7,1600},StarterPack={6,800},Character={7,1500},Backpack={6,1000},PlayerGui={8,3000},PlayerScripts={7,1600}
+}}
+local function saf(f,d)local o,r=pcall(f);if o then return r end return d end
+local function san(v)local s=tostring(v):gsub("\r","\\r"):gsub("\n","\\n"):gsub("\t","\\t");return #s>C.STR and s:sub(1,C.STR).."...[TRUNCATED]" or s end
+local function full(i)return saf(function()return i:GetFullName()end,i and i.Name or "unknown")end
+local function attrs(i)local r=saf(function()return i:GetAttributes()end,{});return type(r)=="table" and r or {} end
+local function tags(i)local r=saf(function()return CS:GetTags(i)end,{});return type(r)=="table" and r or {} end
+local function keys(t)local r={};for k in pairs(t)do r[#r+1]=k end;table.sort(r,function(a,b)return tostring(a)<tostring(b)end);return r end
+local function val(v)local t=typeof(v);if v==nil then return"nil"elseif t=="string"then return'"'..san(v)..'"'elseif t=="number"or t=="boolean"then return tostring(v)elseif t=="Vector3"then return string.format("Vector3(%.2f, %.2f, %.2f)",v.X,v.Y,v.Z)elseif t=="CFrame"then local p=v.Position;return string.format("CFrame(%.2f, %.2f, %.2f)",p.X,p.Y,p.Z)elseif t=="Color3"then return string.format("Color3(%.3f, %.3f, %.3f)",v.R,v.G,v.B)elseif t=="Instance"then return full(v)end return san(v)end
+
+local parent=saf(function()if type(gethui)=="function"then return gethui()end end,nil)or LP:WaitForChild("PlayerGui")
+local old=parent:FindFirstChild("RobloxScannerGUI");if old then old:Destroy()end
+local G=Instance.new("ScreenGui");G.Name="RobloxScannerGUI";G.ResetOnSpawn=false;G.IgnoreGuiInset=true;G.DisplayOrder=999999;G.Parent=parent
+local M=Instance.new("Frame");M.AnchorPoint=Vector2.new(.5,.5);M.Position=UDim2.fromScale(.5,.5);M.Size=UDim2.fromScale(.94,.82);M.BackgroundColor3=Color3.fromRGB(20,22,27);M.BorderSizePixel=0;M.Parent=G
+Instance.new("UICorner",M).CornerRadius=UDim.new(0,12)
+local sc=Instance.new("UIStroke",M);sc.Color=Color3.fromRGB(73,80,94);sc.Thickness=1
+local sz=Instance.new("UISizeConstraint",M);sz.MinSize=Vector2.new(340,360);sz.MaxSize=Vector2.new(1100,760)
+local TB=Instance.new("Frame",M);TB.Size=UDim2.new(1,0,0,44);TB.BackgroundColor3=Color3.fromRGB(28,31,38);TB.BorderSizePixel=0
+local ti=Instance.new("TextLabel",TB);ti.BackgroundTransparency=1;ti.Position=UDim2.new(0,14,0,0);ti.Size=UDim2.new(1,-60,1,0);ti.Font=Enum.Font.GothamBold;ti.Text="ROBLOX CLIENT SCANNER • V"..V;ti.TextColor3=Color3.fromRGB(238,241,247);ti.TextSize=15;ti.TextXAlignment=Enum.TextXAlignment.Left
+local x=Instance.new("TextButton",TB);x.AnchorPoint=Vector2.new(1,.5);x.Position=UDim2.new(1,-10,.5,0);x.Size=UDim2.fromOffset(32,28);x.BackgroundColor3=Color3.fromRGB(47,51,61);x.BorderSizePixel=0;x.Font=Enum.Font.GothamBold;x.Text="×";x.TextColor3=Color3.new(1,1,1);x.TextSize=20;Instance.new("UICorner",x).CornerRadius=UDim.new(0,7)
+local CT=Instance.new("Frame",M);CT.BackgroundTransparency=1;CT.Position=UDim2.new(0,10,0,54);CT.Size=UDim2.new(1,-20,1,-64)
+local L=Instance.new("ScrollingFrame",CT);L.Size=UDim2.new(.31,-5,1,0);L.BackgroundColor3=Color3.fromRGB(26,29,35);L.BorderSizePixel=0;L.ScrollBarThickness=3;L.CanvasSize=UDim2.new(0,0,0,455);Instance.new("UICorner",L).CornerRadius=UDim.new(0,9)
+local R=Instance.new("Frame",CT);R.Position=UDim2.new(.31,5,0,0);R.Size=UDim2.new(.69,-5,1,0);R.BackgroundColor3=Color3.fromRGB(13,15,18);R.BorderSizePixel=0;Instance.new("UICorner",R).CornerRadius=UDim.new(0,9)
