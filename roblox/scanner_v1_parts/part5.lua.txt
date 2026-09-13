@@ -6,20 +6,76 @@
         end)
 
         if ok then
-            setStatus("Scan V1.3 completado • " .. tostring(state.total) .. " objetos", 1)
+            setStatus("Scan V1.4 completado • " .. tostring(state.total) .. " objetos", 1)
             terminalSet(compactTerminalSummary())
             setExportsEnabled(true)
+            CopySource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+            CopySource.TextColor3 = Color3.fromRGB(122, 128, 139)
+            CopySource.AutoButtonColor = false
+            setSourceButtonEnabled(state.capabilities.decompile)
             ScanButton.Text = "ESCANEAR DE NUEVO"
             ScanButton.AutoButtonColor = true
         else
             reportData = nil
             setStatus("Error durante el scan", 0)
-            terminalSet("SCANNER V1.3 ERROR\n\n" .. tostring(err))
+            terminalSet("SCANNER V1.4 ERROR\n\n" .. tostring(err))
             ScanButton.Text = "REINTENTAR SCAN"
             ScanButton.AutoButtonColor = true
+            setSourceButtonEnabled(false)
         end
 
         running = false
+    end)
+end)
+
+SourceScanButton.MouseButton1Click:Connect(function()
+    if running or sourceRunning or not reportData then
+        return
+    end
+
+    if not state.capabilities.decompile then
+        setStatus("decompile() no disponible", 0)
+        terminalSet("[SOURCE ERROR]\ndecompile() no está disponible en este ejecutor.")
+        return
+    end
+
+    sourceRunning = true
+    SourceScanButton.Text = "ANALIZANDO SOURCE..."
+    SourceScanButton.AutoButtonColor = false
+    ScanButton.AutoButtonColor = false
+    CopySource.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+    CopySource.TextColor3 = Color3.fromRGB(122, 128, 139)
+    CopySource.AutoButtonColor = false
+
+    task.spawn(function()
+        local ok, resultOrError = xpcall(function()
+            local success, message = runSourceAnalysis()
+            if not success then
+                error(message or "source analysis failed")
+            end
+            reportData = buildReports()
+            return true
+        end, function(message)
+            return tostring(message)
+        end)
+
+        if ok then
+            setStatus("SOURCE V1.4 completado", 1)
+            terminalSet(compactSourceSummary())
+            CopySource.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
+            CopySource.TextColor3 = Color3.fromRGB(245, 247, 251)
+            CopySource.AutoButtonColor = true
+            SourceScanButton.Text = "REANALIZAR SOURCE"
+            SourceScanButton.AutoButtonColor = true
+        else
+            setStatus("Error en SOURCE", 0)
+            terminalSet("SOURCE V1.4 ERROR\n\n" .. tostring(resultOrError))
+            SourceScanButton.Text = "REINTENTAR SOURCE"
+            SourceScanButton.AutoButtonColor = true
+        end
+
+        ScanButton.AutoButtonColor = true
+        sourceRunning = false
     end)
 end)
 
