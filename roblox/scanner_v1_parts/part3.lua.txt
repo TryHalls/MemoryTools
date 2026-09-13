@@ -1,217 +1,192 @@
-
-local state = emptyState()
-
-local function scannerGuiOwns(instance)
-    return instance == ScreenGui or safeCall(function() return instance:IsDescendantOf(ScreenGui) end, false)
+                if tostring(value) == tostring(LocalPlayer.UserId) or tostring(value) == LocalPlayer.Name then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
-local function inspectInstance(instance)
+local function runtimeRelevant(instance)
+    local lower = string.lower(instance.Name)
+    for _, term in ipairs(RUNTIME_NAME_TERMS) do
+        if lower:find(term, 1, true) then return true end
+    end
+    local attrs = safeCall(function() return instance:GetAttributes() end, {})
+    if type(attrs) == "table" then
+        for key in pairs(attrs) do
+            local k = string.lower(tostring(key))
+            for _, term in ipairs(RUNTIME_ATTR_TERMS) do
+                if k:find(term, 1, true) then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function recordRuntime(instance)
+    if #state.runtimeHits >= CONFIG.MAX_RUNTIME_HITS or state.runtimeHitSeen[instance] then return end
+    state.runtimeHitSeen[instance] = true
+    local tags = getTags(instance)
+    table.sort(tags)
+    local position = ""
+    if instance:IsA("BasePart") then
+        position = tostring(instance.CFrame)
+    elseif instance:IsA("Model") then
+        position = safeCall(function() return tostring(instance:GetPivot()) end, "")
+    end
+    state.runtimeHits[#state.runtimeHits + 1] = {
+        path = fullName(instance),
+        className = instance.ClassName,
+        parent = instance.Parent and fullName(instance.Parent) or "nil",
+        attrs = formatAttributes(instance),
+        tags = table.concat(tags, ", "),
+        children = childPreview(instance),
+        transform = sanitize(position, 260),
+        ownerMatch = pathMatchesOwner(instance),
+    }
+end
+
+local function inspectInstance(instance, rootName)
     if state.seen[instance] then return end
     state.seen[instance] = true
     state.total = state.total + 1
-    state.classCounts[instance.ClassName] = (state.classCounts[instance.ClassName] or 0) + 1
     local path = fullName(instance)
-    if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") then
-        state.remotes[#state.remotes + 1] = {
-            instance = instance,
-            className = instance.ClassName,
-            name = instance.Name,
-            path = path,
-        }
-    elseif instance:IsA("ModuleScript") then
-        state.modules[#state.modules + 1] = {
-            instance = instance,
-            className = instance.ClassName,
-            name = instance.Name,
-            path = path,
-        }
+    if instance:IsA("ModuleScript") then
+        state.modules[#state.modules + 1] = {instance=instance, path=path, className=instance.ClassName}
     elseif instance:IsA("LocalScript") or instance:IsA("Script") then
-        state.scripts[#state.scripts + 1] = {
-            instance = instance,
-            className = instance.ClassName,
-            name = instance.Name,
-            path = path,
-        }
+        state.scripts[#state.scripts + 1] = {instance=instance, path=path, className=instance.ClassName}
+    end
+    if rootName == "Workspace" and runtimeRelevant(instance) then
+        recordRuntime(instance)
     end
 end
 
 local function getRoots()
     local roots = {
-        { name = "ReplicatedStorage", instance = ReplicatedStorage, config = CONFIG.ROOTS.ReplicatedStorage },
-        { name = "Workspace", instance = Workspace, config = CONFIG.ROOTS.Workspace },
+        {name="ReplicatedStorage", instance=ReplicatedStorage, config=CONFIG.ROOTS.ReplicatedStorage},
+        {name="Workspace", instance=Workspace, config=CONFIG.ROOTS.Workspace},
     }
-    local dynamic = {
-        Character = LocalPlayer.Character,
-        Backpack = LocalPlayer:FindFirstChildOfClass("Backpack"),
-        PlayerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui"),
-        PlayerScripts = LocalPlayer:FindFirstChild("PlayerScripts"),
-    }
-    for _, name in ipairs({"Character", "Backpack", "PlayerGui", "PlayerScripts"}) do
-        local instance = dynamic[name]
-        if instance then
-            roots[#roots + 1] = { name = name, instance = instance, config = CONFIG.ROOTS[name] }
-        else
-            state.warnings[#state.warnings + 1] = name .. " unavailable"
-        end
+    local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+    if playerScripts then
+        roots[#roots+1] = {name="PlayerScripts", instance=playerScripts, config=CONFIG.ROOTS.PlayerScripts}
+    else
+        state.warnings[#state.warnings+1] = "PlayerScripts unavailable"
+    end
+    if LocalPlayer.Character then
+        roots[#roots+1] = {name="Character", instance=LocalPlayer.Character, config=CONFIG.ROOTS.Character}
     end
     return roots
 end
 
-local function shouldSkipHeavy(rootName, instance)
-    return rootName == "ReplicatedStorage" and instance.Parent == ReplicatedStorage and CONFIG.HEAVY_REPLICATED_TOP_LEVEL[instance.Name] == true
-end
-
-local function scanRoot(rootInfo, index, count)
-    local queue = {{instance = rootInfo.instance, depth = 0}}
-    local head = 1
-    local scanned = 0
-    local truncated = false
-    terminalAdd("[SCAN] " .. rootInfo.name)
+local function scanRoot(info, rootIndex, rootCount)
+    local queue = {{instance=info.instance, depth=0}}
+    local head, scanned, truncated = 1, 0, false
+    terminalAdd("[SCAN] " .. info.name)
     while head <= #queue do
-        if scanned >= rootInfo.config.maxObjects then
-            truncated = true
-            break
-        end
-        local node = queue[head]
+        if scanned >= info.config.maxObjects then truncated = true break end
+        local item = queue[head]
         head = head + 1
-        local instance = node.instance
-        if not scannerGuiOwns(instance) then
+        local instance = item.instance
+        if not ownGui(instance) then
             scanned = scanned + 1
-            inspectInstance(instance)
-            if shouldSkipHeavy(rootInfo.name, instance) then
-                state.skippedHeavy[#state.skippedHeavy + 1] = fullName(instance)
-            elseif node.depth < rootInfo.config.maxDepth then
+            inspectInstance(instance, info.name)
+            local skip = info.name == "ReplicatedStorage"
+                and instance.Parent == ReplicatedStorage
+                and CONFIG.HEAVY_REPLICATED[instance.Name]
+            if not skip and item.depth < info.config.maxDepth then
                 local children = safeCall(function() return instance:GetChildren() end, {})
                 for _, child in ipairs(children) do
-                    queue[#queue + 1] = {instance = child, depth = node.depth + 1}
+                    queue[#queue+1] = {instance=child, depth=item.depth+1}
                 end
             end
         end
         if scanned % CONFIG.YIELD_EVERY == 0 then
-            setStatus(rootInfo.name .. " • " .. tostring(scanned), (index - 1) / count)
+            setStatus(info.name .. " • " .. tostring(scanned), (rootIndex-1)/rootCount)
             task.wait()
         end
     end
-    state.roots[#state.roots + 1] = {name = rootInfo.name, scanned = scanned, truncated = truncated}
-    if truncated then state.warnings[#state.warnings + 1] = rootInfo.name .. " reached configured scan limit" end
-    terminalAdd(string.format("[%s] %s • %d", truncated and "WARN" or "OK", rootInfo.name, scanned))
-    setStatus("Completado " .. rootInfo.name, index / count)
+    state.roots[#state.roots+1] = {name=info.name, scanned=scanned, truncated=truncated}
+    if truncated then state.warnings[#state.warnings+1] = info.name .. " reached configured scan limit" end
+    terminalAdd(string.format("[%s] %s • %d", truncated and "WARN" or "OK", info.name, scanned))
 end
 
--- Target selection ------------------------------------------------------------
-
-local function matchTarget(pathLower, suffix)
-    return endsWith(pathLower, suffix)
+local function snapshotHumanoid()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    state.humanoid = {
+        characterPath = character and fullName(character) or "unavailable",
+        humanoidPath = humanoid and fullName(humanoid) or "unavailable",
+        rootPath = root and fullName(root) or "unavailable",
+        WalkSpeed = humanoid and humanoid.WalkSpeed or "unavailable",
+        JumpPower = humanoid and humanoid.JumpPower or "unavailable",
+        JumpHeight = humanoid and humanoid.JumpHeight or "unavailable",
+        UseJumpPower = humanoid and humanoid.UseJumpPower or "unavailable",
+        HipHeight = humanoid and humanoid.HipHeight or "unavailable",
+        AutoRotate = humanoid and humanoid.AutoRotate or "unavailable",
+        Gravity = Workspace.Gravity,
+        RootCFrame = root and tostring(root.CFrame) or "unavailable",
+    }
 end
 
-local function allScriptRecords()
-    local combined = {}
-    for _, item in ipairs(state.modules) do combined[#combined + 1] = item end
-    for _, item in ipairs(state.scripts) do combined[#combined + 1] = item end
-    return combined
+local function allRecords()
+    local all = {}
+    for _, item in ipairs(state.modules) do all[#all+1] = item end
+    for _, item in ipairs(state.scripts) do all[#all+1] = item end
+    return all
 end
 
 local function selectTargets()
-    local all = allScriptRecords()
-    local selected = {}
-    local missing = {}
+    local all = allRecords()
+    local selected, missing = {}, {}
     for _, rule in ipairs(TARGET_RULES) do
         local found = nil
         for _, record in ipairs(all) do
-            if matchTarget(string.lower(record.path), rule.suffix) then
+            if endsWith(string.lower(record.path), rule.suffix) then
                 found = record
                 break
             end
         end
         if found then
-            selected[#selected + 1] = {label = rule.label, record = found}
+            selected[#selected+1] = {label=rule.label, record=found}
         else
-            missing[#missing + 1] = rule.label .. " :: " .. rule.suffix
+            missing[#missing+1] = rule.label .. " :: " .. rule.suffix
         end
     end
     state.source.targets = selected
-    state.source.missingTargets = missing
+    state.source.missing = missing
     return selected
 end
 
--- Static decompiler analysis --------------------------------------------------
+-- Source analysis --------------------------------------------------------------
 
-local function extractQuotedLiterals(text)
-    local result = {}
-    local seen = {}
-    for value in string.gmatch(text, '"([^"\\]*)"') do
-        local rendered = safeLiteral(value)
-        if rendered ~= "" and not seen[rendered] then
-            seen[rendered] = true
-            result[#result + 1] = rendered
-        end
-    end
-    for value in string.gmatch(text, "'([^'\\]*)'") do
-        local rendered = safeLiteral(value)
-        if rendered ~= "" and not seen[rendered] then
-            seen[rendered] = true
-            result[#result + 1] = rendered
-        end
-    end
-    return result
-end
-
-local function contextBlock(lines, lineNumber)
-    local from = math.max(1, lineNumber - CONFIG.CONTEXT_LINES_BEFORE)
-    local to = math.min(#lines, lineNumber + CONFIG.CONTEXT_LINES_AFTER)
+local function contextBlock(lines, center)
+    local first = math.max(1, center - CONFIG.CONTEXT_BEFORE)
+    local last = math.min(#lines, center + CONFIG.CONTEXT_AFTER)
     local out = {}
-    for index = from, to do
-        out[#out + 1] = string.format("L%d: %s", index, sanitize(trim(lines[index]), CONFIG.MAX_CONTEXT_LINE))
+    for i=first,last do
+        local marker = i == center and ">" or " "
+        out[#out+1] = string.format("%s L%d: %s", marker, i, sanitize(trim(lines[i]), CONFIG.MAX_CONTEXT_LINE))
     end
-    return table.concat(out, " | ")
+    return table.concat(out, "\n"), first, last
 end
 
-local function callReceiver(line, token)
-    local escaped = token:gsub("([^%w])", "%%%1")
-    local receiver = string.match(line, "([%a_][%w_]*)%s*:%s*" .. escaped)
-    if receiver then return receiver end
-    receiver = string.match(line, "([%a_][%w_]*)%s*%.%s*" .. escaped)
-    return receiver
-end
-
-local function findAliasOrigin(lines, lineNumber, receiver)
-    if not receiver or receiver == "" then return nil end
-    local base = string.match(receiver, "^([%a_][%w_]*)") or receiver
-    local from = math.max(1, lineNumber - CONFIG.MAX_ALIAS_LOOKBACK)
-    for index = lineNumber - 1, from, -1 do
-        local line = trim(lines[index])
-        local lhs = string.match(line, "^local%s+([%a_][%w_]*)%s*=") or string.match(line, "^([%a_][%w_]*)%s*=")
-        if lhs == base then
-            return string.format("L%d: %s", index, sanitize(line, CONFIG.MAX_CONTEXT_LINE))
-        end
-    end
-    return nil
-end
-
-local function extractRequireLines(lines)
+local function extractRequires(lines)
     local out = {}
-    for index, line in ipairs(lines) do
-        if string.find(line, "require(", 1, true) then
-            out[#out + 1] = string.format("L%d: %s", index, sanitize(trim(line), CONFIG.MAX_CONTEXT_LINE))
-            if #out >= CONFIG.MAX_REQUIRES_PER_SCRIPT then break end
+    for i,line in ipairs(lines) do
+        if line:find("require(",1,true) then
+            out[#out+1] = string.format("L%d: %s", i, sanitize(trim(line), CONFIG.MAX_CONTEXT_LINE))
+            if #out >= CONFIG.MAX_REQUIRES_PER_TARGET then break end
         end
     end
     return out
 end
 
-local function extractInterestingLines(lines)
-    local out = {}
-    local seen = {}
-    for index, line in ipairs(lines) do
-        local lower = string.lower(line)
-        local interesting = false
-        for _, keyword in ipairs(INTERESTING_KEYWORDS) do
-            if string.find(lower, keyword, 1, true) then
-                interesting = true
-                break
-            end
-        end
-        if interesting then
-            local rendered = string.format("L%d: %s", index, sanitize(trim(line), CONFIG.MAX_CONTEXT_LINE))
-            if not seen[rendered] then
-                seen[rendered] = true
+local function focusMatches(line)
+    local matches = {}
+    local lower = string.lower(line)
+    for _, term in ipairs(FOCUS_TERMS) do
+        if lower:find(string.lower(term),1,true) then matches[#matches+1] = term end
+    end
+    return matches
