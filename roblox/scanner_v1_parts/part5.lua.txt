@@ -1,6 +1,26 @@
-local function generate()add("ROBLOX CLIENT SCANNER V1 - GUI EDITION");add("Version: "..V);add("[ENVIRONMENT]");add("PlaceId: "..game.PlaceId);add("GameId: "..game.GameId);add("JobId: "..san(saf(function()return game.JobId end,"?")));add("PlaceVersion: "..tostring(saf(function()return game.PlaceVersion end,"?")));add("CreatorId: "..tostring(saf(function()return game.CreatorId end,"?")));local stream=saf(function()return WS.StreamingEnabled end,"?");add("Workspace.StreamingEnabled: "..tostring(stream));if stream==true then warn[#warn+1]="Workspace StreamingEnabled=true; visible Workspace may be incomplete"end;add("[LOCAL PLAYER]");add("Name: "..san(LP.Name));add("DisplayName: "..san(saf(function()return LP.DisplayName end,"")));add("UserId: "..LP.UserId);add("Character: "..(LP.Character and full(LP.Character)or"nil"));add("[DATAMODEL TOP LEVEL]");for _,i in ipairs(saf(function()return game:GetChildren()end,{}))do add("- "..san(i.Name).." ["..i.ClassName.."]")end;local r=roots();for j,z in ipairs(r)do scan(z[1],z[2],z[3],j,#r)end;add("##################################################");add("[INTERESTING OBJECTS]");for j,z in ipairs(int)do add("#"..j.." ["..z.class.."]");add("Name: "..san(z.name));add("Path: "..san(z.path));if next(z.a)then add("Attributes:");for _,k in ipairs(keys(z.a))do add("  "..k.." = "..val(z.a[k]))end end;if #z.g>0 then add("Tags: "..table.concat(z.g,", "))end;if next(z.p)then add("Properties:");for _,k in ipairs(keys(z.p))do add("  "..k.." = "..san(z.p[k]))end end;if j%100==0 then task.wait()end end;add("[COLLECTION SERVICE TAGS]");local at=saf(function()return CS:GetAllTags()end,{});table.sort(at);for _,g in ipairs(at)do add(g..": "..#saf(function()return CS:GetTagged(g)end,{}).." visible instance(s)")end;add("[GLOBAL SUMMARY]");add("Objects scanned: "..st.total);add("Interesting objects: "..#int);for _,n in ipairs({"RemoteEvent","RemoteFunction","ModuleScript","LocalScript","Script","Tool","ProximityPrompt","ClickDetector","GuiObject","ValueBase","Attributes","TaggedObjects"})do add(n..": "..st[n])end;add("[WARNINGS / LIMITATIONS]");add("Only information visible to the current client is included.");add("No remotes were called, no modules required, no scripts decompiled.");if #warn==0 then add("No scanner warnings.")else for _,w in ipairs(warn)do add("- "..w)end end;if trunc then lines[#lines+1]="- Report hit MAX_REPORT_CHARS."end;return table.concat(lines,"\n")end
+            setStatus("Generando reportes...", 0.98)
+            task.wait()
+            reportData = buildReports()
+        end, function(message)
+            return tostring(message)
+        end)
 
-reset()
-B.MouseButton1Click:Connect(function()if running then return end;running=true;reset();K.BackgroundColor3=Color3.fromRGB(52,56,66);K.TextColor3=Color3.fromRGB(122,128,139);K.AutoButtonColor=false;B.Text="ESCANEANDO...";B.AutoButtonColor=false;T.Text="[START] Iniciando reconocimiento pasivo...\n[INFO] Todo se mostrará dentro de esta GUI.";status("Preparando scanner...",0);task.spawn(function()local ok,res=xpcall(generate,function(e)return tostring(e)end);if ok then report=res;status("Scan completado • "..st.total.." objetos",1);T.Text="[SCAN COMPLETADO]\n\n"..report;K.BackgroundColor3=Color3.fromRGB(55,126,82);K.TextColor3=Color3.new(.96,.97,.99);K.AutoButtonColor=true;B.Text="ESCANEAR DE NUEVO";B.BackgroundColor3=Color3.fromRGB(55,92,168);B.AutoButtonColor=true else report="SCANNER ERROR\n"..res;T.Text=report;status("Error durante el scan.",0);K.BackgroundColor3=Color3.fromRGB(154,67,67);K.TextColor3=Color3.new(1,1,1);K.AutoButtonColor=true;B.Text="REINTENTAR SCAN";B.AutoButtonColor=true end;running=false end)end)
-K.MouseButton1Click:Connect(function()if not report then return end;local f=type(setclipboard)=="function"and setclipboard or(type(toclipboard)=="function"and toclipboard or nil);if not f then term("[ERROR] No hay función de portapapeles disponible.");S.Text="Portapapeles no disponible.";return end;local o,e=pcall(function()f(report)end);if o then K.Text="COPIADO ✓";S.Text="Resultado copiado al portapapeles.";task.delay(1.5,function()if K.Parent then K.Text="COPIAR RESULTADO"end end)else term("[ERROR] Falló la copia: "..tostring(e))end end)
-return G
+        if ok then
+            setStatus("Scan completado • " .. tostring(state.total) .. " objetos", 1)
+            terminalSet(compactTerminalSummary())
+            setExportsEnabled(true)
+            ScanButton.Text = "ESCANEAR DE NUEVO"
+            ScanButton.AutoButtonColor = true
+        else
+            reportData = nil
+            setStatus("Error durante el scan", 0)
+            terminalSet("SCANNER ERROR\n\n" .. tostring(err))
+            ScanButton.Text = "REINTENTAR SCAN"
+            ScanButton.AutoButtonColor = true
+        end
+
+        running = false
+    end)
+end)
+
+return ScreenGui
