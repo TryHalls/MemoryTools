@@ -11,7 +11,7 @@
     add("ReplicatedFirst", ReplicatedFirst)
     add("Workspace", Workspace)
 
-    for _, serviceName in ipairs({ "StarterGui", "StarterPlayer", "StarterPack", "Lighting", "SoundService", "Teams" }) do
+    for _, serviceName in ipairs({ "Lighting", "SoundService", "Teams" }) do
         add(serviceName, safeCall(function()
             return game:GetService(serviceName)
         end, nil))
@@ -23,6 +23,12 @@
     add("PlayerScripts", LocalPlayer:FindFirstChild("PlayerScripts"))
 
     return roots
+end
+
+local function shouldSkipHeavyReplicatedSubtree(rootName, instance)
+    return rootName == "ReplicatedStorage"
+        and instance.Parent == ReplicatedStorage
+        and CONFIG.HEAVY_REPLICATED_TOP_LEVEL[instance.Name] == true
 end
 
 local function scanRoot(rootInfo, rootIndex, rootCount)
@@ -56,7 +62,14 @@ local function scanRoot(rootInfo, rootIndex, rootCount)
             rootClasses[instance.ClassName] = (rootClasses[instance.ClassName] or 0) + 1
             inspectInstance(instance)
 
-            if depth < cfg.maxDepth then
+            local skipHeavy = shouldSkipHeavyReplicatedSubtree(name, instance)
+            if skipHeavy then
+                local children = safeCall(function() return instance:GetChildren() end, {})
+                state.skippedHeavy[#state.skippedHeavy + 1] = {
+                    path = fullName(instance),
+                    directChildren = #children,
+                }
+            elseif depth < cfg.maxDepth then
                 local children = safeCall(function()
                     return instance:GetChildren()
                 end, {})
@@ -122,7 +135,7 @@ end
 
 local function buildSummary()
     local lines = {}
-    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.2 - SUMMARY"
+    lines[#lines + 1] = "ROBLOX CLIENT SCANNER V1.3 - SUMMARY"
     lines[#lines + 1] = "Version: " .. VERSION
     lines[#lines + 1] = "PlaceId: " .. tostring(game.PlaceId)
     lines[#lines + 1] = "GameId: " .. tostring(game.GameId)
@@ -136,6 +149,7 @@ local function buildSummary()
     lines[#lines + 1] = "RemoteEvents: " .. tostring(state.classCounts.RemoteEvent or 0)
     lines[#lines + 1] = "RemoteFunctions: " .. tostring(state.classCounts.RemoteFunction or 0)
     lines[#lines + 1] = "ModuleScripts: " .. tostring(state.classCounts.ModuleScript or 0)
+    lines[#lines + 1] = "Core modules: " .. tostring(#state.coreModules)
     lines[#lines + 1] = "LocalScripts: " .. tostring(state.classCounts.LocalScript or 0)
     lines[#lines + 1] = "Scripts: " .. tostring(state.classCounts.Script or 0)
     lines[#lines + 1] = "Tools: " .. tostring(state.classCounts.Tool or 0)
@@ -146,6 +160,20 @@ local function buildSummary()
     lines[#lines + 1] = "[ROOTS]"
     for _, root in ipairs(state.roots) do
         lines[#lines + 1] = string.format("%s: %d objects%s", root.name, root.scanned, root.truncated and " [TRUNCATED]" or "")
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[SKIPPED HEAVY VISUAL SUBTREES]"
+    if #state.skippedHeavy == 0 then
+        lines[#lines + 1] = "None"
+    else
+        for _, item in ipairs(state.skippedHeavy) do
+            lines[#lines + 1] = string.format("- %s (%d direct children)", item.path, item.directChildren)
+        end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[EXECUTOR CAPABILITY PRESENCE - NOT INVOKED]"
+    for _, key in ipairs(sortedKeys(state.capabilities)) do
+        lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
     end
     lines[#lines + 1] = ""
     lines[#lines + 1] = "[PRIORITY NAME HITS]"
@@ -172,12 +200,66 @@ local function buildSummary()
     lines[#lines + 1] = ""
     lines[#lines + 1] = "[LIMITATIONS]"
     lines[#lines + 1] = "Only client-visible/replicated information is included."
-    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, and no scripts decompiled."
+    lines[#lines + 1] = "No remotes were invoked, no ModuleScripts required, no scripts decompiled, and no connections inspected."
+    lines[#lines + 1] = "Potentially sensitive attribute values are redacted from exported reports."
+    return table.concat(lines, "\n")
+end
+
+local function buildRemoteNamespaces()
+    local namespaces = {}
+    for _, item in ipairs(state.remotes) do
+        local namespace = string.match(item.name, "^R[EF]/([^/]+)/")
+        if namespace then
+            local record = namespaces[namespace]
+            if not record then
+                record = { RemoteEvent = 0, RemoteFunction = 0 }
+                namespaces[namespace] = record
+            end
+            record[item.className] = (record[item.className] or 0) + 1
+        end
+    end
+    return namespaces
+end
+
+local function buildCoreMap()
+    local lines = {
+        "ROBLOX CLIENT SCANNER V1.3 - CORE MAP",
+        "Core modules and network namespaces selected from observed client-visible architecture.",
+        "No module source was read or executed by this report.",
+        "",
+        "[NETWORK NAMESPACES]",
+    }
+    local namespaces = buildRemoteNamespaces()
+    for _, namespace in ipairs(sortedKeys(namespaces)) do
+        local record = namespaces[namespace]
+        lines[#lines + 1] = string.format(
+            "%s: RE=%d RF=%d TOTAL=%d",
+            namespace,
+            record.RemoteEvent or 0,
+            record.RemoteFunction or 0,
+            (record.RemoteEvent or 0) + (record.RemoteFunction or 0)
+        )
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[CORE MODULES]"
+    table.sort(state.coreModules, function(a, b) return a.path < b.path end)
+    for index, item in ipairs(state.coreModules) do
+        lines[#lines + 1] = string.format("#%d %s", index, item.path)
+        appendMetadataLines(lines, item)
+    end
+    if #state.coreModules == 0 then
+        lines[#lines + 1] = "None"
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[CAPABILITIES DETECTED - NOT USED]"
+    for _, key in ipairs(sortedKeys(state.capabilities)) do
+        lines[#lines + 1] = key .. ": " .. tostring(state.capabilities[key])
+    end
     return table.concat(lines, "\n")
 end
 
 local function buildRemotes()
-    local lines = { "ROBLOX CLIENT SCANNER V1.2 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.3 - REMOTES", "Total: " .. tostring(#state.remotes), "" }
     table.sort(state.remotes, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.remotes) do
         lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
@@ -191,7 +273,7 @@ local function buildRemotes()
 end
 
 local function buildModules()
-    local lines = { "ROBLOX CLIENT SCANNER V1.2 - MODULES", "Total: " .. tostring(#state.modules), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.3 - MODULES", "Total: " .. tostring(#state.modules), "" }
     table.sort(state.modules, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.modules) do
         lines[#lines + 1] = string.format("#%d [ModuleScript]", index)
@@ -203,7 +285,7 @@ local function buildModules()
 end
 
 local function buildScripts()
-    local lines = { "ROBLOX CLIENT SCANNER V1.2 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
+    local lines = { "ROBLOX CLIENT SCANNER V1.3 - SCRIPTS", "Total: " .. tostring(#state.scripts), "" }
     table.sort(state.scripts, function(a, b) return a.path < b.path end)
     for index, item in ipairs(state.scripts) do
         lines[#lines + 1] = string.format("#%d [%s]", index, item.className)
@@ -225,8 +307,8 @@ end
 
 local function buildStructure()
     local lines = {
-        "ROBLOX CLIENT SCANNER V1.2 - STRUCTURE / METADATA",
-        "Folders/configurations are listed by full path; physical Models/Parts are summarized through counts.",
+        "ROBLOX CLIENT SCANNER V1.3 - STRUCTURE / METADATA",
+        "Folders/configurations are listed by full path; heavy visual asset subtrees are intentionally skipped.",
         "",
         "[ROOT CLASS SUMMARIES]",
     }
