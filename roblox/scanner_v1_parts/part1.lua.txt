@@ -1,7 +1,7 @@
--- Roblox Client Scanner V1.2
--- Focused architecture/networking reconnaissance with GUI export controls.
+-- Roblox Client Scanner V1.3
+-- Focused architecture/networking reconnaissance with safe exports.
 
-local VERSION = "1.2.0"
+local VERSION = "1.3.0"
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -24,22 +24,25 @@ local CONFIG = {
     MAX_METADATA_ENTRIES = 1200,
     MAX_GUI_ENTRIES = 900,
     MAX_VALUE_ENTRIES = 900,
-    MAX_KEYWORD_HITS = 160,
-    MAX_CHILDREN_PER_NODE = 600,
+    MAX_KEYWORD_HITS = 180,
+    MAX_CORE_MODULES = 280,
+    MAX_CHILDREN_PER_NODE = 700,
     ROOTS = {
-        ReplicatedStorage = { maxDepth = 10, maxObjects = 9000 },
+        ReplicatedStorage = { maxDepth = 11, maxObjects = 14000 },
         ReplicatedFirst = { maxDepth = 8, maxObjects = 2200 },
-        Workspace = { maxDepth = 7, maxObjects = 8500 },
-        StarterGui = { maxDepth = 8, maxObjects = 3000 },
-        StarterPlayer = { maxDepth = 8, maxObjects = 3000 },
-        StarterPack = { maxDepth = 7, maxObjects = 1500 },
+        Workspace = { maxDepth = 6, maxObjects = 6500 },
         Lighting = { maxDepth = 6, maxObjects = 1400 },
         SoundService = { maxDepth = 7, maxObjects = 1600 },
         Teams = { maxDepth = 5, maxObjects = 800 },
         Character = { maxDepth = 8, maxObjects = 2200 },
         Backpack = { maxDepth = 7, maxObjects = 1500 },
         PlayerGui = { maxDepth = 9, maxObjects = 5000 },
-        PlayerScripts = { maxDepth = 8, maxObjects = 2600 },
+        PlayerScripts = { maxDepth = 9, maxObjects = 3200 },
+    },
+    HEAVY_REPLICATED_TOP_LEVEL = {
+        AssetModels = true,
+        CutsceneAssets = true,
+        Assets = true,
     },
 }
 
@@ -48,6 +51,44 @@ local PRIORITY_WORDS = {
     "config", "settings", "shop", "product", "gamepass", "currency", "purchase",
     "buy", "equip", "inventory", "egg", "gear", "plot", "base", "area", "guard",
     "treadmill", "reward", "gift", "fuse", "admin", "cmdr", "mutation", "rarity",
+    "profile", "replicator", "throttle", "rate", "token", "staff", "state",
+}
+
+local CORE_PATTERNS = {
+    "packages.networking",
+    "shared.remotes",
+    "shared.save",
+    "shared.player",
+    "coreprofilemanager",
+    "defaultstats",
+    "ratelimiter",
+    "tokenbucket",
+    "actionthrottle",
+    "client.modules.replicatorclient",
+    "runtimeinstanceregistry",
+    "client.clientglobals",
+    "client.eggstate",
+    "client.plotstate",
+    "client.platformsignals",
+    "client.fusemachinesignals",
+    "client.sakurasignals",
+    "client.consolesignals",
+    "client.toolgameplayguard",
+    "shared.modules.staff",
+    "shared.util.toolcooldown",
+    "shared.util.walkspeedgovernor",
+    "shared.util.eggrecords",
+    "shared.util.assetearnings",
+    "shared.util.fusekernel",
+    "shared.util.shrinefusionrules",
+    "data.currency",
+    "data.gears",
+    "data.treadmills",
+    "data.guards",
+    "data.areas",
+    "data.bases",
+    "data.products",
+    "data.gamepasses",
 }
 
 local function safeCall(callback, fallback)
@@ -133,13 +174,37 @@ local function hasPriorityWord(instance)
     return false
 end
 
+local function isCoreModulePath(path)
+    local lower = string.lower(path)
+    for _, pattern in ipairs(CORE_PATTERNS) do
+        if string.find(lower, pattern, 1, true) then
+            return true
+        end
+    end
+    if string.find(lower, ".playerscripts.game.", 1, true) then
+        return true
+    end
+    return false
+end
+
+local function isSensitiveAttributeKey(key)
+    local lower = string.lower(tostring(key))
+    for _, word in ipairs({ "apikey", "api_key", "secret", "token", "password", "credential", "authkey", "accesskey" }) do
+        if string.find(lower, word, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
 local function formatAttributes(attributes)
     if next(attributes) == nil then
         return nil
     end
     local parts = {}
     for _, key in ipairs(sortedKeys(attributes)) do
-        parts[#parts + 1] = tostring(key) .. "=" .. serialize(attributes[key])
+        local valueText = isSensitiveAttributeKey(key) and "[REDACTED]" or serialize(attributes[key])
+        parts[#parts + 1] = tostring(key) .. "=" .. valueText
     end
     return table.concat(parts, "; ")
 end
@@ -226,7 +291,7 @@ Left.Size = UDim2.new(0.34, -5, 1, 0)
 Left.BackgroundColor3 = Color3.fromRGB(26, 29, 35)
 Left.BorderSizePixel = 0
 Left.ScrollBarThickness = 4
-Left.CanvasSize = UDim2.new(0, 0, 0, 740)
+Left.CanvasSize = UDim2.new(0, 0, 0, 820)
 Instance.new("UICorner", Left).CornerRadius = UDim.new(0, 9)
 
 local Right = Instance.new("Frame", Content)
@@ -252,7 +317,7 @@ local function makeLabel(parent, text, y, height, bold)
 end
 
 makeLabel(Left, "CONTROLES", 12, 22, true)
-makeLabel(Left, "Escaneo enfocado en arquitectura visible, networking y módulos. Los assets físicos se resumen en vez de listarse uno por uno.", 42, 70, false)
+makeLabel(Left, "V1.3 prioriza networking, estado, perfil y módulos núcleo. Omite subárboles visuales pesados y redacta atributos sensibles.", 42, 70, false)
 
 local function makeButton(text, y, color)
     local button = Instance.new("TextButton", Left)
@@ -271,12 +336,13 @@ end
 local ScanButton = makeButton("INICIAR SCAN", 122)
 makeLabel(Left, "EXPORTAR", 178, 20, true)
 local CopySummary = makeButton("COPIAR RESUMEN", 204, Color3.fromRGB(52, 56, 66))
-local CopyRemotes = makeButton("COPIAR REMOTES", 250, Color3.fromRGB(52, 56, 66))
-local CopyModules = makeButton("COPIAR MÓDULOS", 296, Color3.fromRGB(52, 56, 66))
-local CopyScripts = makeButton("COPIAR SCRIPTS", 342, Color3.fromRGB(52, 56, 66))
-local CopyStructure = makeButton("COPIAR ESTRUCTURA", 388, Color3.fromRGB(52, 56, 66))
-local CopyAll = makeButton("COPIAR TODO", 434, Color3.fromRGB(52, 56, 66))
-local NextPart = makeButton("SIGUIENTE PARTE", 480, Color3.fromRGB(80, 73, 124))
+local CopyCore = makeButton("COPIAR CORE MAP", 250, Color3.fromRGB(52, 56, 66))
+local CopyRemotes = makeButton("COPIAR REMOTES", 296, Color3.fromRGB(52, 56, 66))
+local CopyModules = makeButton("COPIAR MÓDULOS", 342, Color3.fromRGB(52, 56, 66))
+local CopyScripts = makeButton("COPIAR SCRIPTS", 388, Color3.fromRGB(52, 56, 66))
+local CopyStructure = makeButton("COPIAR ESTRUCTURA", 434, Color3.fromRGB(52, 56, 66))
+local CopyAll = makeButton("COPIAR TODO", 480, Color3.fromRGB(52, 56, 66))
+local NextPart = makeButton("SIGUIENTE PARTE", 526, Color3.fromRGB(80, 73, 124))
 NextPart.Visible = false
 
-makeLabel(Left, "ESTADO", 536, 20, true)
+makeLabel(Left, "ESTADO", 582, 20, true)
