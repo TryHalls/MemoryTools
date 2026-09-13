@@ -170,7 +170,7 @@ local function callReceiver(line, token)
     local escaped = token:gsub("([^%w])", "%%%1")
     local receiver = string.match(line, "([%a_][%w_]*)%s*:%s*" .. escaped)
     if receiver then return receiver end
-    receiver = string.match(line, "([%a_][%w_%.%[%]\"']*)%s*%.%s*" .. escaped)
+    receiver = string.match(line, "([%a_][%w_]*)%s*%.%s*" .. escaped)
     return receiver
 end
 
