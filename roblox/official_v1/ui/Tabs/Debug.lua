@@ -45,6 +45,7 @@ return function(Context)
                 "SpeedPower: " .. tostring(playerSnapshot.speedPower.value or "UNKNOWN"),
                 "",
                 "Field Eggs Count: " .. tostring(eggCount),
+                "Invalid Egg Entries: " .. tostring(Context.Services.EggService.LastInvalidCount),
                 "Areas Count: " .. tostring(areaCount),
                 "FIRST_AREA_SPECIAL: " .. tostring(firstAreaCount),
                 "Local Plot: " .. (plot and "READY" or "NOT READY"),

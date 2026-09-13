@@ -8,6 +8,8 @@ return function(Context)
             Logger = context.Logger,
             Dependencies = context.Dependencies,
             LastCount = 0,
+            LastInvalidCount = 0,
+            LastSnapshot = nil,
         }, EggService)
     end
 
@@ -22,19 +24,34 @@ return function(Context)
     end
 
     function EggService:ReadAll()
+        self.LastCount = 0
+        self.LastInvalidCount = 0
+        self.LastSnapshot = nil
         local module = self:_module()
         if not module or type(module.ReadFieldEggs) ~= "function" then
             return nil, "EggState.ReadFieldEggs unavailable"
         end
-        local ok, records = pcall(module.ReadFieldEggs)
+        local ok, snapshot = pcall(module.ReadFieldEggs)
         if not ok then
-            self.Logger:Error("ReadFieldEggs failed: " .. tostring(records))
-            return nil, tostring(records)
+            self.Logger:Error("ReadFieldEggs failed: " .. tostring(snapshot))
+            return nil, tostring(snapshot)
         end
-        if type(records) ~= "table" then
-            return nil, "ReadFieldEggs returned " .. typeof(records)
+        if type(snapshot) ~= "table" then
+            return nil, "ReadFieldEggs returned " .. type(snapshot)
         end
+
+        self.LastSnapshot = snapshot
+        local records = snapshot.Records
+        if records ~= nil and type(records) ~= "table" then
+            return nil, "ReadFieldEggs snapshot.Records returned " .. type(records)
+        end
+        if records == nil then
+            -- Compatibility fallback for the previously observed direct-record map.
+            records = snapshot
+        end
+
         local list = {}
+        local invalidCount = 0
         for key, record in pairs(records) do
             if type(record) == "table" then
                 if record.Uid == nil and type(key) == "string" then
@@ -44,9 +61,12 @@ return function(Context)
                     record = copy
                 end
                 table.insert(list, record)
+            else
+                invalidCount = invalidCount + 1
             end
         end
         self.LastCount = #list
+        self.LastInvalidCount = invalidCount
         return list
     end
 

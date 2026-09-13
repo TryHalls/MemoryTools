@@ -194,6 +194,7 @@ return function(Context)
         layout.Padding = UDim.new(0, 4)
         layout.Parent = list
         local open = false
+        local optionButtons = {}
 
         local function render()
             main.Text = tostring(object.Selected or "-") .. "  ▼"
@@ -206,9 +207,10 @@ return function(Context)
         local function rebuild(newOptions, newSelected)
             object.Options = newOptions or {}
             if newSelected ~= nil then object.Selected = newSelected end
-            for _, child in ipairs(list:GetChildren()) do
-                if child:IsA("GuiButton") then child:Destroy() end
+            for _, button in ipairs(optionButtons) do
+                button:Destroy()
             end
+            table.clear(optionButtons)
             for _, option in ipairs(object.Options) do
                 local value = option
                 local choice = Components.Button(list, tostring(value), function()
@@ -219,6 +221,7 @@ return function(Context)
                 end, Theme.raised)
                 choice.Size = UDim2.new(1, -5, 0, 38)
                 choice.TextSize = 12
+                table.insert(optionButtons, choice)
             end
             render()
             if open then

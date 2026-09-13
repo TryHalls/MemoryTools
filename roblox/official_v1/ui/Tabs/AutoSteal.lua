@@ -20,12 +20,12 @@ return function(Context)
         C.NumberInput(page, "Delay", 0.5, function(value) return controller:UpdateConfig("delay", value) end)
         C.NumberInput(page, "Carry Timeout", 5, function(value) return controller:UpdateConfig("carryTimeout", value) end)
         C.NumberInput(page, "Retries", 2, function(value) return controller:UpdateConfig("retries", value) end)
-        local target = C.Label(page, "", 84, "mono")
+        local target = C.Label(page, "", 104, "mono")
 
         local function refreshSelectors()
             local areaList, assetList, err = Context.Services.AreaService:Snapshot()
             if not areaList then
-                Context.Logger:Warn("Selector refresh failed: " .. tostring(err))
+                controller:Stop("Auto Steal UI data error: " .. tostring(err), true)
                 return
             end
             table.insert(areaList, 1, "All Zones")
@@ -57,6 +57,7 @@ return function(Context)
                 "UID: " .. Context.State:Get("currentTargetUid", ""),
                 "Area: " .. Context.State:Get("currentTargetArea", ""),
                 "Completed: " .. tostring(Context.State:Get("completed", 0)) .. "    Failed: " .. tostring(Context.State:Get("failed", 0)),
+                "Detail: " .. Context.State:Get("autoStealMessage", ""),
             }, "\n")
         end
         window:Connect(Context.State.Changed, refreshStatus)

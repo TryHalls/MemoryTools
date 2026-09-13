@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.0 bootstrap
-local VERSION = "1.0.0"
+-- MemoryTools Official V1.0.1 bootstrap
+local VERSION = "1.0.1"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -97,6 +97,7 @@ Context.State = State.new({
     noclipEnabled = false,
     freezeEnabled = false,
     reapplyPlayerSettings = true,
+    autoStealMessage = "",
 })
 Context.Cleanup:Add(Context.State)
 Context.Safe = instantiate("core/Safe")

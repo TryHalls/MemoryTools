@@ -24,6 +24,13 @@ return function(Context)
         return player and (player:FindFirstChildOfClass("PlayerGui") or player:WaitForChild("PlayerGui", 8))
     end
 
+    local function tracebackError(err)
+        if type(debug) == "table" and type(debug.traceback) == "function" then
+            return debug.traceback(tostring(err), 2)
+        end
+        return tostring(err)
+    end
+
     function MainWindow.new(context)
         local Cleanup = context.Modules["core/Cleanup"]
         local C = context.Modules["ui/Components"]
@@ -196,10 +203,16 @@ return function(Context)
             page.Name = tab.key
             self.Pages[tab.key] = page
             local builder = context.Modules["ui/Tabs/" .. tab.key]
-            local built, buildError = pcall(builder, page, self)
+            local built, buildError = xpcall(function()
+                builder(page, self)
+            end, tracebackError)
             if not built then
-                context.Logger:Error(tab.text .. " UI failed: " .. tostring(buildError))
-                C.Label(page, tab.text .. " unavailable\n" .. tostring(buildError), 100, "muted")
+                context.Controllers.AutoStealController:Stop(
+                    "UI construction failed (" .. tab.text .. "):\n" .. tostring(buildError),
+                    true
+                )
+                local failure = C.Label(page, tab.text .. " unavailable\n" .. tostring(buildError), 100, "muted")
+                failure.AutomaticSize = Enum.AutomaticSize.Y
             end
             self:Connect(button.Activated, function() self:ShowTab(tab.key) end)
         end

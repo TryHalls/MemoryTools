@@ -5,6 +5,13 @@ return function(Context)
     local Players = game:GetService("Players")
     local VALID_MODES = { Nearest = true, Random = true, ["Specific Asset"] = true }
 
+    local function tracebackError(err)
+        if type(debug) == "table" and type(debug.traceback) == "function" then
+            return debug.traceback(tostring(err), 2)
+        end
+        return tostring(err)
+    end
+
     function AutoStealController.new(context)
         return setmetatable({
             Context = context,
@@ -83,6 +90,9 @@ return function(Context)
 
     function AutoStealController:_select(records)
         self:_state("FILTER")
+        if self.Config.targetMode == "Specific Asset" and self.Config.specificAsset == "ANY" then
+            return nil, "Select a specific asset"
+        end
         local candidates = {}
         for _, record in ipairs(records) do
             if self:_validRecord(record) then table.insert(candidates, record) end
@@ -91,9 +101,6 @@ return function(Context)
         self:_state("SELECT_TARGET")
         if self.Config.targetMode == "Random" then
             return candidates[math.random(1, #candidates)]
-        end
-        if self.Config.targetMode == "Specific Asset" and self.Config.specificAsset == "ANY" then
-            return nil, "Select a specific asset"
         end
         local root = self.Context.Character.Root
         if not root then return nil, "HumanoidRootPart is not ready" end
@@ -152,18 +159,18 @@ return function(Context)
             self:_state("REFRESH_EGGS")
             local records, readError = self.EggService:ReadAll()
             if not records then
-                self.Logger:Error("Auto Steal read failed: " .. tostring(readError))
                 self.Context.State:Set("failed", self.Context.State:Get("failed", 0) + 1)
-                self:_state("ERROR")
+                self:Stop("Auto Steal data error: " .. tostring(readError), true)
                 break
             end
             local target, selectError, cachedCFrame = self:_select(records)
             if not target then
-                self.Logger:Warn("Auto Steal: " .. tostring(selectError))
+                self.Context.State:Set("autoStealMessage", tostring(selectError))
                 if not self.Config.repeatEnabled then break end
                 self:_state("COOLDOWN")
                 if not self:_wait(self.Config.delay, generation) then break end
             else
+                self.Context.State:Set("autoStealMessage", "")
                 local success, result
                 for attempt = 0, self.Config.retries do
                     if not self:_active(generation) then break end
@@ -193,7 +200,7 @@ return function(Context)
         if generation == self._generation then
             self.Config.enabled = false
             self:_state("IDLE")
-            self.Context.State:Patch({ currentTargetUid = "", currentTargetArea = "" })
+            self.Context.State:Patch({ currentTargetUid = "", currentTargetArea = "", autoStealMessage = "" })
         end
         self._workerRunning = false
     end
@@ -202,17 +209,21 @@ return function(Context)
         if self.Config.enabled or self._workerRunning then return false, "Auto Steal is already running" end
         if not self.EggService:IsReady() then return false, "EggState is unavailable" end
         if not self.Context.Dependencies:IsReady("NestResolver") then return false, "NestResolver is unavailable" end
+        local records, readError = self.EggService:ReadAll()
+        if not records then
+            self:Stop("Auto Steal data error: " .. tostring(readError), true)
+            return false, readError
+        end
         self._generation = self._generation + 1
         self.Config.enabled = true
         self._failedTargets = {}
+        self.Context.State:Set("autoStealMessage", "")
         local generation = self._generation
         task.spawn(function()
-            local ok, err = xpcall(function() self:_run(generation) end, function(value) return tostring(value) end)
+            local ok, err = xpcall(function() self:_run(generation) end, tracebackError)
             if not ok then
-                self.Logger:Error("Auto Steal worker crashed: " .. tostring(err))
                 if generation == self._generation then
-                    self.Config.enabled = false
-                    self:_state("ERROR")
+                    self:Stop("Auto Steal worker crashed:\n" .. tostring(err), true)
                     self._workerRunning = false
                 end
             end
@@ -220,12 +231,20 @@ return function(Context)
         return true
     end
 
-    function AutoStealController:Stop()
+    function AutoStealController:Stop(reason, isError)
         self._generation = self._generation + 1
         self.Config.enabled = false
-        self:_state("STOPPED")
-        self.Context.State:Patch({ currentTargetUid = "", currentTargetArea = "" })
-        self.Logger:Info("Auto Steal stopped")
+        self:_state(isError and "ERROR" or "STOPPED")
+        self.Context.State:Patch({
+            currentTargetUid = "",
+            currentTargetArea = "",
+            autoStealMessage = tostring(reason or ""),
+        })
+        if isError then
+            self.Logger:Error(tostring(reason or "Auto Steal stopped by error"))
+        else
+            self.Logger:Info(tostring(reason or "Auto Steal stopped"))
+        end
     end
 
     function AutoStealController:Destroy()
