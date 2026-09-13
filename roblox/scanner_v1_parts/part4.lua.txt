@@ -1,2 +1,276 @@
-local function scan(name,root,lim,ri,rc)term("[SCAN] "..name.."...");status("Escaneando "..name.."...",(ri-1)/rc);local q,h,n,cl,tr={{root,0}},1,0,{},false;add("");add("==================================================");add("[ROOT] "..name);add("Path: "..full(root));add("==================================================");while h<=#q do if n>=lim[2]then tr=true;break end;local z=q[h];h+=1;local i,dep=z[1],z[2];if not skip(i)then n+=1;done+=1;cl[i.ClassName]=(cl[i.ClassName]or 0)+1;analyse(i);add(string.rep("  ",dep).."- "..san(i.Name).." ["..i.ClassName.."]");if dep<lim[1]then local ch=saf(function()return i:GetChildren()end,{});local m=math.min(#ch,C.CHILD);if #ch>C.CHILD then add(string.rep("  ",dep+1).."[CHILDREN TRUNCATED: "..#ch.." -> "..C.CHILD.."]")end;for j=1,m do if n+(#q-h+1)>=lim[2]then tr=true;break end;if not skip(ch[j])then q[#q+1]={ch[j],dep+1}end end end end;if done%C.YIELD==0 then status("Escaneando "..name.." • "..n.." objetos",(ri-1)/rc);task.wait()end end;add("[ROOT SUMMARY]");add("Scanned objects: "..n);add("Truncated: "..tostring(tr));for _,k in ipairs(keys(cl))do add(k..": "..cl[k])end;if tr then warn[#warn+1]=name.." reached configured limits";term("[WARN] "..name.." alcanzó el límite")else term("[OK] "..name.." • "..n.." objetos")end;status("Completado "..name,ri/rc)end
-local function roots()local r={};local function a(n,i)if i and C.L[n]then r[#r+1]={n,i,C.L[n]}elseif C.L[n]then warn[#warn+1]=n.." unavailable"end end;a("ReplicatedStorage",RS);a("ReplicatedFirst",RF);a("Workspace",WS);for _,n in ipairs({"Lighting","SoundService","Teams","StarterGui","StarterPlayer","StarterPack"})do a(n,saf(function()return game:GetService(n)end))end;a("Character",LP.Character);a("Backpack",LP:FindFirstChildOfClass("Backpack"));a("PlayerGui",LP:FindFirstChildOfClass("PlayerGui"));a("PlayerScripts",LP:FindFirstChild("PlayerScripts"));return r end
+        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
+        lines[#lines + 1] = "DirectChildren: " .. tostring(item.childCount)
+        if next(item.childClasses) ~= nil then
+            lines[#lines + 1] = "ChildClasses: " .. formatClassCounts(item.childClasses)
+        end
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[ATTRIBUTES / TAGS]"
+    table.sort(state.metadata, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.metadata) do
+        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
+        appendMetadataLines(lines, item)
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[VALUES]"
+    table.sort(state.values, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.values) do
+        lines[#lines + 1] = string.format("[%s] %s = %s", item.className, item.path, serialize(item.value))
+    end
+
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "[TOOLS]"
+    table.sort(state.tools, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.tools) do
+        lines[#lines + 1] = "Path: " .. item.path
+        lines[#lines + 1] = "ToolTip: " .. sanitize(item.tooltip)
+        lines[#lines + 1] = "RequiresHandle: " .. tostring(item.requiresHandle)
+        lines[#lines + 1] = "CanBeDropped: " .. tostring(item.canBeDropped)
+        appendMetadataLines(lines, item)
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[INTERACTIONS]"
+    table.sort(state.interactions, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.interactions) do
+        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
+        if item.actionText ~= nil then lines[#lines + 1] = "ActionText: " .. sanitize(item.actionText) end
+        if item.objectText ~= nil then lines[#lines + 1] = "ObjectText: " .. sanitize(item.objectText) end
+        if item.maxDistance ~= nil then lines[#lines + 1] = "MaxDistance: " .. tostring(item.maxDistance) end
+        if item.holdDuration ~= nil then lines[#lines + 1] = "HoldDuration: " .. tostring(item.holdDuration) end
+        lines[#lines + 1] = ""
+    end
+
+    lines[#lines + 1] = "[GUI ENTRYPOINTS / INTERACTIVE CONTROLS]"
+    table.sort(state.gui, function(a, b) return a.path < b.path end)
+    for _, item in ipairs(state.gui) do
+        lines[#lines + 1] = string.format("[%s] %s", item.className, item.path)
+        if item.text and item.text ~= "" then
+            lines[#lines + 1] = "Text: " .. sanitize(item.text)
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+local function buildAll(summary, remotes, modules, scripts, structure)
+    return table.concat({
+        summary,
+        "\n\n================ REMOTES ================\n",
+        remotes,
+        "\n\n================ MODULES ================\n",
+        modules,
+        "\n\n================ SCRIPTS ================\n",
+        scripts,
+        "\n\n================ STRUCTURE ================\n",
+        structure,
+    })
+end
+
+local function buildReports()
+    local summary = buildSummary()
+    local remotes = buildRemotes()
+    local modules = buildModules()
+    local scripts = buildScripts()
+    local structure = buildStructure()
+    return {
+        summary = summary,
+        remotes = remotes,
+        modules = modules,
+        scripts = scripts,
+        structure = structure,
+        all = buildAll(summary, remotes, modules, scripts, structure),
+    }
+end
+
+local function splitText(text, maxLength)
+    local chunks = {}
+    local cursor = 1
+    local totalLength = #text
+
+    while cursor <= totalLength do
+        local finish = math.min(cursor + maxLength - 1, totalLength)
+        if finish < totalLength then
+            local candidate = string.sub(text, cursor, finish)
+            local lastNewline = nil
+            for index = #candidate, 1, -1 do
+                if string.sub(candidate, index, index) == "\n" then
+                    lastNewline = index
+                    break
+                end
+            end
+            if lastNewline and lastNewline > math.floor(maxLength * 0.65) then
+                finish = cursor + lastNewline - 2
+            end
+        end
+
+        chunks[#chunks + 1] = string.sub(text, cursor, finish)
+        cursor = finish + 1
+    end
+
+    if #chunks == 0 then
+        chunks[1] = ""
+    end
+    return chunks
+end
+
+local function clipboardFunction()
+    if type(setclipboard) == "function" then
+        return setclipboard
+    end
+    if type(toclipboard) == "function" then
+        return toclipboard
+    end
+    return nil
+end
+
+local function copyActiveChunk()
+    if not activeChunks then
+        return
+    end
+
+    local copy = clipboardFunction()
+    if not copy then
+        setStatus("Portapapeles no disponible. El contenido se mostró en terminal.")
+        terminalSet(activeChunks[activeChunkIndex])
+        return
+    end
+
+    local ok, err = pcall(function()
+        copy(activeChunks[activeChunkIndex])
+    end)
+
+    if ok then
+        local label = string.format("%s • parte %d/%d copiada", activeExportName or "Reporte", activeChunkIndex, #activeChunks)
+        setStatus(label)
+        terminalSet(
+            "[COPIADO]\n" .. label .. "\n\n" ..
+            "Caracteres en esta parte: " .. tostring(#activeChunks[activeChunkIndex]) .. "\n" ..
+            "Usa SIGUIENTE PARTE si hay más bloques."
+        )
+        NextPart.Visible = #activeChunks > 1
+        if #activeChunks > 1 then
+            NextPart.Text = string.format("SIGUIENTE PARTE (%d/%d)", activeChunkIndex, #activeChunks)
+        end
+    else
+        setStatus("Error copiando al portapapeles")
+        terminalSet("[ERROR] No se pudo copiar:\n" .. tostring(err))
+    end
+end
+
+local function exportCategory(name, text)
+    if not reportData then
+        return
+    end
+    activeExportName = name
+    activeChunks = splitText(text, CONFIG.CHUNK_SIZE)
+    activeChunkIndex = 1
+    copyActiveChunk()
+end
+
+NextPart.MouseButton1Click:Connect(function()
+    if not activeChunks or #activeChunks <= 1 then
+        return
+    end
+    activeChunkIndex = activeChunkIndex + 1
+    if activeChunkIndex > #activeChunks then
+        activeChunkIndex = 1
+    end
+    copyActiveChunk()
+end)
+
+local exportButtons = { CopySummary, CopyRemotes, CopyModules, CopyScripts, CopyStructure, CopyAll }
+local function setExportsEnabled(enabled)
+    for _, button in ipairs(exportButtons) do
+        if enabled then
+            button.BackgroundColor3 = Color3.fromRGB(55, 126, 82)
+            button.TextColor3 = Color3.fromRGB(245, 247, 251)
+            button.AutoButtonColor = true
+        else
+            button.BackgroundColor3 = Color3.fromRGB(52, 56, 66)
+            button.TextColor3 = Color3.fromRGB(122, 128, 139)
+            button.AutoButtonColor = false
+        end
+    end
+end
+
+setExportsEnabled(false)
+
+CopySummary.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Resumen", reportData.summary) end
+end)
+CopyRemotes.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Remotes", reportData.remotes) end
+end)
+CopyModules.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Módulos", reportData.modules) end
+end)
+CopyScripts.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Scripts", reportData.scripts) end
+end)
+CopyStructure.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Estructura", reportData.structure) end
+end)
+CopyAll.MouseButton1Click:Connect(function()
+    if reportData then exportCategory("Todo", reportData.all) end
+end)
+
+local function compactTerminalSummary()
+    local lines = {
+        "[SCAN COMPLETADO]",
+        "",
+        "Objects scanned: " .. tostring(state.total),
+        "Remotes: " .. tostring(#state.remotes),
+        "Modules: " .. tostring(#state.modules),
+        "Scripts: " .. tostring(#state.scripts),
+        "Folders/Configurations: " .. tostring(#state.structure),
+        "Metadata entries: " .. tostring(#state.metadata),
+        "Tools: " .. tostring(#state.tools),
+        "Interactions: " .. tostring(#state.interactions),
+        "",
+        "El reporte completo está guardado internamente.",
+        "Usa los botones de EXPORTAR para copiarlo por categorías.",
+        "COPIAR TODO se dividirá en partes de hasta " .. tostring(CONFIG.CHUNK_SIZE) .. " caracteres.",
+    }
+    if #state.warnings > 0 then
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "Warnings: " .. tostring(#state.warnings)
+        lines[#lines + 1] = "Copia RESUMEN para verlos."
+    end
+    return table.concat(lines, "\n")
+end
+
+ScanButton.MouseButton1Click:Connect(function()
+    if running then
+        return
+    end
+
+    running = true
+    reportData = nil
+    activeChunks = nil
+    activeChunkIndex = 1
+    activeExportName = nil
+    NextPart.Visible = false
+    state = emptyState()
+    setExportsEnabled(false)
+
+    ScanButton.Text = "ESCANEANDO..."
+    ScanButton.AutoButtonColor = false
+    setStatus("Preparando scanner...", 0)
+    terminalSet("[START] Scanner V1.2\n[INFO] Recolectando arquitectura relevante sin enumerar assets físicos individualmente.")
+
+    task.spawn(function()
+        local ok, err = xpcall(function()
+            local streaming = safeCall(function() return Workspace.StreamingEnabled end, "unavailable")
+            if streaming == true then
+                state.warnings[#state.warnings + 1] = "Workspace.StreamingEnabled=true; Workspace visible may be incomplete"
+            end
+
+            local roots = getRoots()
+            for index, rootInfo in ipairs(roots) do
+                scanRoot(rootInfo, index, #roots)
+            end
+
+            terminalAdd("[BUILD] Generando reportes por categorías...")
