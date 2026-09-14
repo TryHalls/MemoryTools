@@ -4,6 +4,11 @@ return function(Context)
 
     local RunService = Context.RunService or game:GetService("RunService")
     local FlightMath = Context.Modules["core/FlightMath"]
+    if type(FlightMath) ~= "table"
+        or type(FlightMath.ResolveOptions) ~= "function"
+        or type(FlightMath.DesiredVelocity) ~= "function" then
+        error("FlightMath is not initialized")
+    end
 
     local function disconnect(connection)
         if connection then pcall(function() connection:Disconnect() end) end

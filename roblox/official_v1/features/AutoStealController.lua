@@ -31,7 +31,6 @@ return function(Context)
                 returnToBase = true,
                 repeatEnabled = true,
                 delay = 0.5,
-                carryTimeout = 5,
                 retries = 2,
                 skipFirstAreaSpecial = true,
             },
@@ -64,7 +63,7 @@ return function(Context)
 
     function AutoStealController:UpdateConfig(key, value)
         if self.Config[key] == nil then return false, "Unknown config key" end
-        if key == "delay" or key == "carryTimeout" then
+        if key == "delay" then
             value = tonumber(value)
             if not value or value < 0.1 or value > 60 then return false, key .. " must be 0.1-60" end
         elseif key == "retries" then
@@ -154,14 +153,21 @@ return function(Context)
             if not self:_wait(0.2, generation) then return false, "cancelled" end
         end
 
-        self:_state("CARRY_REQUEST")
-        local carried, carryResult = self.EggService:RequestCarryAndWait(uid, self.Config.carryTimeout, function()
+        self:_state("WAIT_MANUAL_CARRY")
+        local carried, carryInfo = self.EggService:WaitForManualCarry(uid, function()
             return not self:_active(generation)
         end, function()
-            if self:_active(generation) then self:_state("WAIT_CARRY") end
+            if self:_active(generation) then
+                self.Context.State:Set("autoStealMessage", "Grab the egg manually")
+            end
         end)
-        if not carried then return false, carryResult end
+        if not carried then return false, carryInfo end
         if not self:_active(generation) then return false, "cancelled" end
+
+        self.Context.State:Set(
+            "autoStealMessage",
+            self.Config.returnToBase and "Manual carry confirmed — returning to base" or "Manual carry confirmed"
+        )
 
         if self.Config.returnToBase then
             self:_state("FLY_TO_BASE")
@@ -174,7 +180,8 @@ return function(Context)
             })
             if not returned then return false, returnError end
         end
-        return true, carryResult
+        self:_state("DONE")
+        return true, carryInfo
     end
 
     function AutoStealController:_run(generation)

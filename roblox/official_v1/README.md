@@ -1,8 +1,8 @@
-# MemoryTools Official V1.0.4
+# MemoryTools Official V1.0.4.1
 
 Cliente modular para el PlaceId 107778070777162. El loader público es
 roblox/official_v1.lua; descarga el bootstrap y los módulos con cache bust
-1.0.4.
+1.0.4.1.
 
 ## Diseño
 
@@ -17,7 +17,7 @@ features independientes.
 
 ## Carga
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.4"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.4.1"))()
 
 La segunda ejecución destruye la instancia anterior mediante
 getgenv().__MEMORYTOOLS_V1 (con fallback a _G).
@@ -41,6 +41,6 @@ módulos, no dispara remotes ni altera el movimiento.
 - Auto Steal y FLY TO BASE usan exclusivamente velocidad física continua en
   Heartbeat. La velocidad horizontal configurable está limitada a 30-150.
 - LOCAL DEBUG TP conserva el teleport local únicamente para depuración manual.
-- La finalización física de un viaje no cuenta como robo: sólo una confirmación
-  positiva de RequestCarryAndWait registra éxito.
+- Auto Steal nunca solicita el carry: espera a que el jugador agarre manualmente
+  el huevo y confirma el estado mediante CarryChanged o ReadFieldEgg.
 - No existe persistencia por filesystem.

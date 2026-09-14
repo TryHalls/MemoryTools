@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.4 bootstrap
-local VERSION = "1.0.4"
+-- MemoryTools Official V1.0.4.1 bootstrap
+local VERSION = "1.0.4.1"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -122,6 +122,9 @@ Context.Cleanup:Add(Context.Character)
 
 local Teleport = instantiate("core/Teleport")
 Context.Teleport = Teleport.new(Context.Character, Context.Logger)
+
+local FlightMath = instantiate("core/FlightMath")
+Context.FlightMath = FlightMath
 
 local FlightMovement = instantiate("core/FlightMovement")
 Context.FlightMovement = FlightMovement.new(Context)

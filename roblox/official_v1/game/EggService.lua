@@ -1,6 +1,8 @@
 return function(Context)
     local EggService = {}
     EggService.__index = EggService
+    local Task = Context.Task or task
+    local Players = Context.Players
 
     function EggService.new(context)
         return setmetatable({
@@ -20,7 +22,7 @@ return function(Context)
     function EggService:IsReady()
         local module = self:_module()
         return type(module) == "table" and type(module.ReadFieldEggs) == "function"
-            and type(module.CarryFieldEgg) == "function"
+            and module.CarryChanged ~= nil and type(module.CarryChanged.Connect) == "function"
     end
 
     function EggService:ReadAll()
@@ -155,6 +157,61 @@ return function(Context)
             return false, "carry mismatch: " .. observedMismatch
         end
         return false, "carry confirmation timeout"
+    end
+
+    function EggService:WaitForManualCarry(uid, isCancelled, onWaiting)
+        if type(uid) ~= "string" or uid == "" then
+            return false, "invalid egg uid"
+        end
+
+        local module = self:_module()
+        local signal = module and module.CarryChanged
+        if not signal or type(signal.Connect) ~= "function" then
+            return false, "EggState.CarryChanged unavailable"
+        end
+
+        local confirmed = false
+        local confirmation = nil
+        local observedMismatch = nil
+        local connection = signal:Connect(function(...)
+            local carry = findCarryState(...)
+            if carry and carry.IsCarrying == true then
+                if carry.Uid == uid then
+                    confirmed = true
+                    confirmation = carry
+                elseif carry.Uid ~= nil then
+                    observedMismatch = tostring(carry.Uid)
+                end
+            end
+        end)
+
+        if onWaiting then pcall(onWaiting) end
+
+        local lastPoll = -math.huge
+        while not confirmed do
+            if isCancelled and isCancelled() then
+                connection:Disconnect()
+                return false, "cancelled"
+            end
+
+            local now = os.clock()
+            if type(module.ReadFieldEgg) == "function" and now - lastPoll >= 0.25 then
+                lastPoll = now
+                local readOk, record = pcall(module.ReadFieldEgg, uid)
+                if not Players then Players = game:GetService("Players") end
+                local localPlayer = Players and Players.LocalPlayer
+                if readOk and type(record) == "table" and localPlayer
+                    and record.CarrierUserId == localPlayer.UserId then
+                    confirmed = true
+                    confirmation = record
+                end
+            end
+
+            if not confirmed then Task.wait(0.05) end
+        end
+
+        connection:Disconnect()
+        return true, confirmation, observedMismatch
     end
 
     function EggService:Destroy() end

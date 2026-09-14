@@ -13,6 +13,10 @@ return function(Context)
         C.Label(page, "AUTO STEAL", 34, "title")
         local status = C.Status(page, "Status", "IDLE")
         local movementBackend = C.Status(page, "Movement Backend", "FLIGHT")
+        C.Status(page, "Carry Mode", "MANUAL")
+        local manualCarryPrompt = C.Label(page, "", 44, "title")
+        manualCarryPrompt.TextColor3 = C.Theme.warning
+        manualCarryPrompt.Visible = false
         local selectorError = C.Label(page, "", 54, "muted")
         selectorError.TextColor3 = C.Theme.danger
         selectorError.Visible = false
@@ -32,7 +36,6 @@ return function(Context)
         C.Toggle(page, "Repeat", true, function(value) controller:UpdateConfig("repeatEnabled", value) end)
         C.NumberInput(page, "Flight Speed", 140, function(value) return controller:UpdateConfig("flightSpeed", value) end)
         C.NumberInput(page, "Delay", 0.5, function(value) return controller:UpdateConfig("delay", value) end)
-        C.NumberInput(page, "Carry Timeout", 5, function(value) return controller:UpdateConfig("carryTimeout", value) end)
         C.NumberInput(page, "Retries", 2, function(value) return controller:UpdateConfig("retries", value) end)
         local target = C.Label(page, "", 104, "mono")
 
@@ -107,15 +110,20 @@ return function(Context)
         C.Button(page, "STOP", function() controller:Stop() end, C.Theme.danger)
 
         local function refreshStatus()
-            status:Set(Context.State:Get("autoStealState", "IDLE"))
+            local autoStealState = Context.State:Get("autoStealState", "IDLE")
+            local detail = Context.State:Get("autoStealMessage", "")
+            status:Set(autoStealState)
             local backend = controller:GetMovementBackend()
             movementBackend:Set(backend, C.Theme.success)
+            manualCarryPrompt.Text = detail
+            manualCarryPrompt.Visible = autoStealState == "WAIT_MANUAL_CARRY"
+                or string.find(detail, "Manual carry confirmed", 1, true) == 1
             target.Text = table.concat({
                 "Current Target: " .. (Context.State:Get("currentTargetUid", "") ~= "" and "ACTIVE" or "-"),
                 "UID: " .. Context.State:Get("currentTargetUid", ""),
                 "Area: " .. Context.State:Get("currentTargetArea", ""),
                 "Completed: " .. tostring(Context.State:Get("completed", 0)) .. "    Failed: " .. tostring(Context.State:Get("failed", 0)),
-                "Detail: " .. Context.State:Get("autoStealMessage", ""),
+                "Detail: " .. detail,
             }, "\n")
         end
         window:Connect(Context.State.Changed, refreshStatus)

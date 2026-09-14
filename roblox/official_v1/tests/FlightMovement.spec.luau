@@ -9,6 +9,16 @@ local context = {
 }
 local FlightMovement = require("../core/FlightMovement")(context)
 local movement = FlightMovement.new(context)
+
+local initializedWithoutMath, initializationError = pcall(function()
+    require("../core/FlightMovement")({
+        RunService = { Heartbeat = {} },
+        Modules = {},
+    })
+end)
+assert(not initializedWithoutMath)
+assert(string.find(tostring(initializationError), "FlightMath is not initialized", 1, true) ~= nil)
+
 assert(not movement:IsActive())
 movement._travel = { cancelled = false, cleaned = false, collisions = {} }
 assert(movement:IsActive())
