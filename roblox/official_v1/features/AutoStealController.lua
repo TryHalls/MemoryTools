@@ -36,7 +36,27 @@ return function(Context)
             _generation = 0,
             _workerRunning = false,
             _failedTargets = {},
+            _localBackendWarned = false,
         }, AutoStealController)
+    end
+
+    function AutoStealController:GetMovementBackend()
+        local teleport = self.Context.Teleport
+        if teleport and type(teleport.GetMovementBackend) == "function" then
+            return teleport:GetMovementBackend()
+        end
+        return "LOCAL"
+    end
+
+    function AutoStealController:_diagnoseMovementBackend()
+        if self:GetMovementBackend() ~= "LOCAL" then return end
+        local message = "Local teleport may be reconciled by RigSync"
+        self.Context.State:Set("autoStealMessage", message)
+        self.Context.State:Set("autoStealMovementWarning", message)
+        if not self._localBackendWarned then
+            self._localBackendWarned = true
+            self.Logger:Warn(message)
+        end
     end
 
     function AutoStealController:_state(value)
@@ -129,6 +149,7 @@ return function(Context)
         if not self:_active(generation) then return false, "cancelled" end
 
         if self.Config.teleportToEgg then
+            self:_diagnoseMovementBackend()
             self:_state("TELEPORT_TARGET")
             local teleported, teleportError = self.Context.Teleport:To(nestCFrame, "field egg " .. uid, true)
             if not teleported then return false, teleportError end
@@ -218,7 +239,12 @@ return function(Context)
         self._generation = self._generation + 1
         self.Config.enabled = true
         self._failedTargets = {}
-        self.Context.State:Set("autoStealMessage", "")
+        self._localBackendWarned = false
+        self.Context.State:Patch({ autoStealMessage = "", autoStealMovementWarning = "" })
+        if (self.Config.teleportToEgg or self.Config.returnToBase)
+            and self:GetMovementBackend() == "LOCAL" then
+            self:_diagnoseMovementBackend()
+        end
         local generation = self._generation
         task.spawn(function()
             local ok, err = xpcall(function() self:_run(generation) end, tracebackError)

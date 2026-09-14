@@ -1,8 +1,8 @@
-# MemoryTools Official V1.0.2
+# MemoryTools Official V1.0.3
 
 Cliente modular para el PlaceId 107778070777162. El loader público es
 roblox/official_v1.lua; descarga el bootstrap y los módulos con cache bust
-1.0.2.
+1.0.3.
 
 ## Diseño
 
@@ -17,18 +17,18 @@ features independientes.
 
 ## Carga
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.2"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1.lua?v=1.0.3"))()
 
 La segunda ejecución destruye la instancia anterior mediante
 getgenv().__MEMORYTOOLS_V1 (con fallback a _G).
 
-## Probe pasivo compacto V1.0.2
+## Probe pasivo de movimiento V1.0.3
 
-roblox/passive_probe_v1_0_2.lua inspecciona únicamente ventanas de source
-relevantes para Staff, Cmdr, RigSync y el mapeo exacto de rarity. No carga
-módulos, no dispara remotes y no inspecciona conexiones ni el GC.
+roblox/passive_probe_movement_v1_0_3.lua inspecciona source de movimiento
+relevante para RigSync, Cmdr y Staff, priorizando ObbyAntiTPClient. No carga
+módulos, no dispara remotes ni altera el movimiento.
 
-    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/passive_probe_v1_0_2.lua?v=1.0.2"))()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/passive_probe_movement_v1_0_3.lua?v=1.0.3"))()
 
 ## Límites intencionales de V1
 
@@ -36,5 +36,7 @@ módulos, no dispara remotes y no inspecciona conexiones ni el GC.
   FirstAreaSlotKey confirmado.
 - No se calcula Highest Rarity: el campo exacto de configuración de rareza
   sigue sin confirmar.
-- SpeedPower es sólo diagnóstico y no se modifica.
+- Las escrituras server-side de WalkSpeed y SpeedPower requieren StaffVerdict
+  confirmado; el verdict de SpeedPower se registra sin asumir su semántica.
+- El backend de teleport sigue siendo local y puede ser reconciliado por RigSync.
 - No existe persistencia por filesystem.

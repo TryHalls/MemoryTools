@@ -12,6 +12,9 @@ return function(Context)
 
         C.Label(page, "AUTO STEAL", 34, "title")
         local status = C.Status(page, "Status", "IDLE")
+        local movementBackend = C.Status(page, "Movement Backend", controller:GetMovementBackend())
+        local movementWarning = C.Label(page, "", 30, "muted")
+        movementWarning.TextColor3 = C.Theme.warning
         local selectorError = C.Label(page, "", 54, "muted")
         selectorError.TextColor3 = C.Theme.danger
         selectorError.Visible = false
@@ -106,6 +109,9 @@ return function(Context)
 
         local function refreshStatus()
             status:Set(Context.State:Get("autoStealState", "IDLE"))
+            local backend = controller:GetMovementBackend()
+            movementBackend:Set(backend, backend == "SERVER" and C.Theme.success or C.Theme.warning)
+            movementWarning.Text = Context.State:Get("autoStealMovementWarning", "")
             target.Text = table.concat({
                 "Current Target: " .. (Context.State:Get("currentTargetUid", "") ~= "" and "ACTIVE" or "-"),
                 "UID: " .. Context.State:Get("currentTargetUid", ""),

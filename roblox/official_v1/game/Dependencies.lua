@@ -9,6 +9,7 @@ return function(Context)
         EggState = { "ReplicatedStorage", "Client", "EggState" },
         PlotState = { "ReplicatedStorage", "Client", "PlotState" },
         AreaEggSlotIdentity = { "ReplicatedStorage", "Shared", "Util", "AreaEggSlotIdentity" },
+        Remotes = { "ReplicatedStorage", "Shared", "Remotes" },
         SharedPlayer = { "ReplicatedStorage", "Shared", "Player" },
         WalkSpeedGovernor = { "ReplicatedStorage", "Shared", "Util", "WalkSpeedGovernor" },
         SpeedPowerProjection = { "ReplicatedStorage", "Client", "SpeedPowerProjection" },

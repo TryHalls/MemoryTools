@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.2 bootstrap
-local VERSION = "1.0.2"
+-- MemoryTools Official V1.0.3 bootstrap
+local VERSION = "1.0.3"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -15,6 +15,7 @@ local MODULE_PATHS = {
     "game/PlotService",
     "game/AreaService",
     "game/PlayerService",
+    "game/StaffService",
     "features/PlayerController",
     "features/TeleportController",
     "features/AutoStealController",
@@ -99,6 +100,9 @@ Context.State = State.new({
     freezeEnabled = false,
     reapplyPlayerSettings = true,
     autoStealMessage = "",
+    autoStealMovementWarning = "",
+    staffStatus = "UNKNOWN",
+    speedPowerVerdictRevision = 0,
 })
 Context.Cleanup:Add(Context.State)
 Context.Safe = instantiate("core/Safe")
@@ -117,7 +121,7 @@ Context.Cleanup:Add(Context.Character)
 local Teleport = instantiate("core/Teleport")
 Context.Teleport = Teleport.new(Context.Character, Context.Logger)
 
-local serviceOrder = { "EggService", "PlotService", "AreaService", "PlayerService" }
+local serviceOrder = { "EggService", "PlotService", "AreaService", "PlayerService", "StaffService" }
 for _, name in ipairs(serviceOrder) do
     local class = instantiate("game/" .. name)
     Context.Services[name] = class.new(Context)
