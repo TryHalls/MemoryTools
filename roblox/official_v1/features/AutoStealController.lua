@@ -2,7 +2,7 @@ return function(Context)
     local AutoStealController = {}
     AutoStealController.__index = AutoStealController
 
-    local Players = game:GetService("Players")
+    local Players = Context.Players or game:GetService("Players")
     local VALID_MODES = { Nearest = true, Random = true, ["Specific Asset"] = true }
 
     local function tracebackError(err)
@@ -26,7 +26,7 @@ return function(Context)
                 specificAsset = "ANY",
                 rarity = "ANY",
                 movementMode = "FLIGHT",
-                flightSpeed = 140,
+                flightSpeed = 40,
                 teleportToEgg = true,
                 returnToBase = true,
                 repeatEnabled = true,
@@ -50,6 +50,10 @@ return function(Context)
 
     function AutoStealController:_active(generation)
         return self.Config.enabled and generation == self._generation and not self.Context.Destroyed
+    end
+
+    function AutoStealController:_isFatalAttemptError(result)
+        return result == "Humanoid is dead"
     end
 
     function AutoStealController:_wait(seconds, generation)
@@ -141,7 +145,7 @@ return function(Context)
 
         if self.Config.teleportToEgg then
             self:_state("FLY_TO_TARGET")
-            local travelled, travelError = self.Context.FlightMovement:TravelTo(nestCFrame, {
+            local travelled, travelError = self.Context.Services.LobbyRouteService:TravelTo(nestCFrame, {
                 label = "field egg " .. uid,
                 horizontalSpeed = self.Config.flightSpeed,
                 cancelCheck = function() return not self:_active(generation) end,
@@ -173,7 +177,7 @@ return function(Context)
             self:_state("FLY_TO_BASE")
             local baseCFrame, plotError = self.PlotService:GetRespawnCFrame()
             if not baseCFrame then return false, plotError end
-            local returned, returnError = self.Context.FlightMovement:TravelTo(baseCFrame, {
+            local returned, returnError = self.Context.Services.LobbyRouteService:TravelTo(baseCFrame, {
                 label = "base with " .. uid,
                 horizontalSpeed = self.Config.flightSpeed,
                 cancelCheck = function() return not self:_active(generation) end,
@@ -208,6 +212,12 @@ return function(Context)
                     success, result = self:_attempt(target, cachedCFrame, generation)
                     if success then break end
                     if result == "cancelled" then break end
+                    if self:_isFatalAttemptError(result) then
+                        self._failedTargets[target.Uid] = true
+                        self.Context.State:Set("failed", self.Context.State:Get("failed", 0) + 1)
+                        self:Stop("Auto Steal stopped: Humanoid is dead", true)
+                        break
+                    end
                     if attempt < self.Config.retries then
                         self:_state("RETRY")
                         self.Logger:Warn("Retry " .. tostring(attempt + 1) .. " for " .. target.Uid .. ": " .. tostring(result))

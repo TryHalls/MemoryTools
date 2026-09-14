@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.4.1 bootstrap
-local VERSION = "1.0.4.1"
+-- MemoryTools Official V1.0.5 bootstrap
+local VERSION = "1.0.5"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -12,12 +12,14 @@ local MODULE_PATHS = {
     "core/Teleport",
     "core/FlightMath",
     "core/FlightMovement",
+    "core/LobbyRouteMath",
     "game/Dependencies",
     "game/EggService",
     "game/PlotService",
     "game/AreaService",
     "game/PlayerService",
     "game/StaffService",
+    "game/LobbyRouteService",
     "features/PlayerController",
     "features/TeleportController",
     "features/AutoStealController",
@@ -130,7 +132,10 @@ local FlightMovement = instantiate("core/FlightMovement")
 Context.FlightMovement = FlightMovement.new(Context)
 Context.Cleanup:Add(Context.FlightMovement)
 
-local serviceOrder = { "EggService", "PlotService", "AreaService", "PlayerService", "StaffService" }
+local LobbyRouteMath = instantiate("core/LobbyRouteMath")
+Context.LobbyRouteMath = LobbyRouteMath
+
+local serviceOrder = { "EggService", "PlotService", "AreaService", "PlayerService", "StaffService", "LobbyRouteService" }
 for _, name in ipairs(serviceOrder) do
     local class = instantiate("game/" .. name)
     Context.Services[name] = class.new(Context)

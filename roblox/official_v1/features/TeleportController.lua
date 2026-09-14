@@ -21,7 +21,7 @@ return function(Context)
             self.Context.Logger:Error("Fly to base: " .. tostring(err))
             return false, err
         end
-        local ok, result = self.Context.FlightMovement:TravelTo(cframe, { label = "base" })
+        local ok, result = self.Context.Services.LobbyRouteService:TravelTo(cframe, { label = "base" })
         if not ok then self.Context.Logger:Error("Fly to base: " .. tostring(result)) end
         return ok, result
     end
