@@ -19,7 +19,7 @@ return function(Context)
                 reapplyToggle:Set(Context.State:Get(key, true), true)
             end
         end)
-        C.Label(page, "Settings are session-only in V1.0.3.\nNo filesystem persistence is used.", 58, "muted")
+        C.Label(page, "Settings are session-only in V1.0.4.\nNo filesystem persistence is used.", 58, "muted")
         C.Button(page, "CLOSE MEMORYTOOLS", function()
             Context:Destroy("closed from Settings")
         end, C.Theme.danger)

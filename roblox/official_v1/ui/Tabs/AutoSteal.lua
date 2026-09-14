@@ -12,9 +12,7 @@ return function(Context)
 
         C.Label(page, "AUTO STEAL", 34, "title")
         local status = C.Status(page, "Status", "IDLE")
-        local movementBackend = C.Status(page, "Movement Backend", controller:GetMovementBackend())
-        local movementWarning = C.Label(page, "", 30, "muted")
-        movementWarning.TextColor3 = C.Theme.warning
+        local movementBackend = C.Status(page, "Movement Backend", "FLIGHT")
         local selectorError = C.Label(page, "", 54, "muted")
         selectorError.TextColor3 = C.Theme.danger
         selectorError.Visible = false
@@ -29,9 +27,10 @@ return function(Context)
             controller:UpdateConfig("specificAsset", value == "Any" and "ANY" or value)
         end)
         C.Section(page, "Options")
-        C.Toggle(page, "Teleport To Egg", true, function(value) controller:UpdateConfig("teleportToEgg", value) end)
+        C.Toggle(page, "Travel To Egg", true, function(value) controller:UpdateConfig("teleportToEgg", value) end)
         C.Toggle(page, "Return To Base", true, function(value) controller:UpdateConfig("returnToBase", value) end)
         C.Toggle(page, "Repeat", true, function(value) controller:UpdateConfig("repeatEnabled", value) end)
+        C.NumberInput(page, "Flight Speed", 140, function(value) return controller:UpdateConfig("flightSpeed", value) end)
         C.NumberInput(page, "Delay", 0.5, function(value) return controller:UpdateConfig("delay", value) end)
         C.NumberInput(page, "Carry Timeout", 5, function(value) return controller:UpdateConfig("carryTimeout", value) end)
         C.NumberInput(page, "Retries", 2, function(value) return controller:UpdateConfig("retries", value) end)
@@ -110,8 +109,7 @@ return function(Context)
         local function refreshStatus()
             status:Set(Context.State:Get("autoStealState", "IDLE"))
             local backend = controller:GetMovementBackend()
-            movementBackend:Set(backend, backend == "SERVER" and C.Theme.success or C.Theme.warning)
-            movementWarning.Text = Context.State:Get("autoStealMovementWarning", "")
+            movementBackend:Set(backend, C.Theme.success)
             target.Text = table.concat({
                 "Current Target: " .. (Context.State:Get("currentTargetUid", "") ~= "" and "ACTIVE" or "-"),
                 "UID: " .. Context.State:Get("currentTargetUid", ""),

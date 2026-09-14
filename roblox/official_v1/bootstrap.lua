@@ -1,5 +1,5 @@
--- MemoryTools Official V1.0.3 bootstrap
-local VERSION = "1.0.3"
+-- MemoryTools Official V1.0.4 bootstrap
+local VERSION = "1.0.4"
 local EXPECTED_PLACE_ID = 107778070777162
 local BASE_URL = "https://raw.githubusercontent.com/TryHalls/MemoryTools/main/roblox/official_v1/"
 
@@ -10,6 +10,8 @@ local MODULE_PATHS = {
     "core/Safe",
     "core/Character",
     "core/Teleport",
+    "core/FlightMath",
+    "core/FlightMovement",
     "game/Dependencies",
     "game/EggService",
     "game/PlotService",
@@ -120,6 +122,10 @@ Context.Cleanup:Add(Context.Character)
 
 local Teleport = instantiate("core/Teleport")
 Context.Teleport = Teleport.new(Context.Character, Context.Logger)
+
+local FlightMovement = instantiate("core/FlightMovement")
+Context.FlightMovement = FlightMovement.new(Context)
+Context.Cleanup:Add(Context.FlightMovement)
 
 local serviceOrder = { "EggService", "PlotService", "AreaService", "PlayerService", "StaffService" }
 for _, name in ipairs(serviceOrder) do

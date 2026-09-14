@@ -25,6 +25,8 @@ return function(Context)
                 targetMode = "Nearest",
                 specificAsset = "ANY",
                 rarity = "ANY",
+                movementMode = "FLIGHT",
+                flightSpeed = 140,
                 teleportToEgg = true,
                 returnToBase = true,
                 repeatEnabled = true,
@@ -36,27 +38,11 @@ return function(Context)
             _generation = 0,
             _workerRunning = false,
             _failedTargets = {},
-            _localBackendWarned = false,
         }, AutoStealController)
     end
 
     function AutoStealController:GetMovementBackend()
-        local teleport = self.Context.Teleport
-        if teleport and type(teleport.GetMovementBackend) == "function" then
-            return teleport:GetMovementBackend()
-        end
-        return "LOCAL"
-    end
-
-    function AutoStealController:_diagnoseMovementBackend()
-        if self:GetMovementBackend() ~= "LOCAL" then return end
-        local message = "Local teleport may be reconciled by RigSync"
-        self.Context.State:Set("autoStealMessage", message)
-        self.Context.State:Set("autoStealMovementWarning", message)
-        if not self._localBackendWarned then
-            self._localBackendWarned = true
-            self.Logger:Warn(message)
-        end
+        return self.Config.movementMode
     end
 
     function AutoStealController:_state(value)
@@ -85,6 +71,12 @@ return function(Context)
             value = tonumber(value)
             if not value or value < 0 or value > 10 then return false, "retries must be 0-10" end
             value = math.floor(value)
+        elseif key == "flightSpeed" then
+            value = tonumber(value)
+            if not value or value ~= value or value == math.huge or value == -math.huge
+                or value < 30 or value > 150 then return false, "flightSpeed must be 30-150" end
+        elseif key == "movementMode" and value ~= "FLIGHT" then
+            return false, "movementMode must be FLIGHT"
         elseif key == "targetMode" and not VALID_MODES[value] then
             return false, "Invalid target mode"
         end
@@ -149,11 +141,17 @@ return function(Context)
         if not self:_active(generation) then return false, "cancelled" end
 
         if self.Config.teleportToEgg then
-            self:_diagnoseMovementBackend()
-            self:_state("TELEPORT_TARGET")
-            local teleported, teleportError = self.Context.Teleport:To(nestCFrame, "field egg " .. uid, true)
-            if not teleported then return false, teleportError end
-            if not self:_wait(self.Config.delay, generation) then return false, "cancelled" end
+            self:_state("FLY_TO_TARGET")
+            local travelled, travelError = self.Context.FlightMovement:TravelTo(nestCFrame, {
+                label = "field egg " .. uid,
+                horizontalSpeed = self.Config.flightSpeed,
+                cancelCheck = function() return not self:_active(generation) end,
+            })
+            if not travelled then return false, travelError end
+            self:_state("ARRIVAL_STABILIZE")
+            local root = self.Context.Character.Root
+            if root and root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
+            if not self:_wait(0.2, generation) then return false, "cancelled" end
         end
 
         self:_state("CARRY_REQUEST")
@@ -166,10 +164,14 @@ return function(Context)
         if not self:_active(generation) then return false, "cancelled" end
 
         if self.Config.returnToBase then
-            self:_state("RETURN_BASE")
+            self:_state("FLY_TO_BASE")
             local baseCFrame, plotError = self.PlotService:GetRespawnCFrame()
             if not baseCFrame then return false, plotError end
-            local returned, returnError = self.Context.Teleport:To(baseCFrame, "base with " .. uid, true)
+            local returned, returnError = self.Context.FlightMovement:TravelTo(baseCFrame, {
+                label = "base with " .. uid,
+                horizontalSpeed = self.Config.flightSpeed,
+                cancelCheck = function() return not self:_active(generation) end,
+            })
             if not returned then return false, returnError end
         end
         return true, carryResult
@@ -239,12 +241,7 @@ return function(Context)
         self._generation = self._generation + 1
         self.Config.enabled = true
         self._failedTargets = {}
-        self._localBackendWarned = false
         self.Context.State:Patch({ autoStealMessage = "", autoStealMovementWarning = "" })
-        if (self.Config.teleportToEgg or self.Config.returnToBase)
-            and self:GetMovementBackend() == "LOCAL" then
-            self:_diagnoseMovementBackend()
-        end
         local generation = self._generation
         task.spawn(function()
             local ok, err = xpcall(function() self:_run(generation) end, tracebackError)
@@ -261,6 +258,7 @@ return function(Context)
     function AutoStealController:Stop(reason, isError)
         self._generation = self._generation + 1
         self.Config.enabled = false
+        self.Context.FlightMovement:Cancel(reason or "Auto Steal stopped")
         self:_state(isError and "ERROR" or "STOPPED")
         self.Context.State:Patch({
             currentTargetUid = "",

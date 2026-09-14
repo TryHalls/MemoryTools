@@ -15,6 +15,17 @@ return function(Context)
         return self.Context.Teleport:To(cframe, "base", true)
     end
 
+    function TeleportController:FlyToBase()
+        local cframe, err = self.Context.Services.PlotService:GetRespawnCFrame()
+        if not cframe then
+            self.Context.Logger:Error("Fly to base: " .. tostring(err))
+            return false, err
+        end
+        local ok, result = self.Context.FlightMovement:TravelTo(cframe, { label = "base" })
+        if not ok then self.Context.Logger:Error("Fly to base: " .. tostring(result)) end
+        return ok, result
+    end
+
     function TeleportController:ToArea(areaId)
         if type(areaId) ~= "string" or areaId == "" then
             return false, "Invalid AreaId"
