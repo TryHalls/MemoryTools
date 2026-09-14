@@ -21,74 +21,79 @@ local function clip(value, maximum)
 end
 
 local function fmtNumber(value)
-    if typeof(value) ~= "number" then
-        return "?"
-    end
-    return string.format("%.3f", value)
+    return string.format("%.4f", value)
 end
 
 local function fmtVector(value)
-    if typeof(value) ~= "Vector3" then
-        return "(?, ?, ?)"
-    end
-    return string.format("(%.3f, %.3f, %.3f)", value.X, value.Y, value.Z)
+    return string.format("(%.4f,%.4f,%.4f)", value.X, value.Y, value.Z)
 end
 
-local function fmtCFrame(value)
-    if typeof(value) ~= "CFrame" then
-        return "?"
-    end
-    local c = { value:GetComponents() }
-    for i, v in ipairs(c) do
-        c[i] = string.format("%.5f", v)
-    end
-    return table.concat(c, ", ")
-end
-
-local function quote(value)
-    return string.format("%q", tostring(value))
+local function fmtFrame(value)
+    return clip(tostring(value), 260)
 end
 
 local function safeFullName(instance)
-    local ok, result = pcall(function()
+    local ok, value = pcall(function()
         return instance:GetFullName()
     end)
-    return ok and clip(result, 320) or clip(instance, 320)
+    return ok and clip(value, 500) or "<unavailable>"
 end
 
-local function formatAttributes(instance)
+local function quote(value)
+    return string.format("%q", clip(value, 180))
+end
+
+local function sortedKeys(dictionary)
+    local keys = {}
+    for key in pairs(dictionary) do
+        table.insert(keys, key)
+    end
+    table.sort(keys, function(a, b)
+        return tostring(a) < tostring(b)
+    end)
+    return keys
+end
+
+local function fmtValue(value)
+    local kind = typeof(value)
+    if kind == "string" then
+        return quote(value)
+    elseif kind == "number" then
+        return fmtNumber(value)
+    elseif kind == "Vector3" then
+        return fmtVector(value)
+    elseif kind == "CFrame" then
+        return fmtFrame(value)
+    elseif kind == "Color3" then
+        return string.format("(%.4f,%.4f,%.4f)", value.R, value.G, value.B)
+    elseif kind == "Instance" then
+        return safeFullName(value)
+    end
+    return clip(value, 180)
+end
+
+local function fmtAttributes(instance)
     local ok, attributes = pcall(function()
         return instance:GetAttributes()
     end)
-    if not ok or type(attributes) ~= "table" then
-        return "<unavailable>"
+    if not ok then
+        return "<error>"
     end
-    local keys = {}
-    for key in pairs(attributes) do
-        table.insert(keys, key)
+    local pieces = {}
+    for _, key in ipairs(sortedKeys(attributes)) do
+        table.insert(pieces, quote(key) .. ":" .. fmtValue(attributes[key]))
     end
-    table.sort(keys)
-    if #keys == 0 then
-        return "{}"
-    end
-    local values = {}
-    for _, key in ipairs(keys) do
-        table.insert(values, quote(key) .. ": " .. clip(attributes[key], 180))
-    end
-    return "{" .. table.concat(values, ", ") .. "}"
+    return "{" .. clip(table.concat(pieces, ","), 500) .. "}"
 end
 
-local function formatTags(instance)
+local function fmtTags(instance)
     local ok, tags = pcall(function()
         return CollectionService:GetTags(instance)
     end)
     if not ok then
-        return "<unavailable>"
+        return "<error>"
     end
     table.sort(tags)
-    if #tags == 0 then
-        return "{}"
-    end
     for index, tag in ipairs(tags) do
         tags[index] = quote(tag)
     end
@@ -129,108 +134,85 @@ local function add(target, line)
     return true
 end
 
-local function obbData(part, worldPoint, expansion)
-    expansion = expansion or Vector3.zero
-    local localPoint = part.CFrame:PointToObjectSpace(worldPoint)
-    local half = part.Size / 2 + expansion
-    local absolute = Vector3.new(math.abs(localPoint.X), math.abs(localPoint.Y), math.abs(localPoint.Z))
-    local margin = half - absolute
-    local inside = absolute.X <= half.X and absolute.Y <= half.Y and absolute.Z <= half.Z
-    local outside = Vector3.new(
-        math.max(absolute.X - half.X, 0),
-        math.max(absolute.Y - half.Y, 0),
-        math.max(absolute.Z - half.Z, 0)
-    )
-    return {
-        localPoint = localPoint,
-        half = half,
-        margin = margin,
-        inside = inside,
-        distance = outside.Magnitude,
-    }
+local function containsPoint(localPoint, halfSize)
+    return math.abs(localPoint.X) <= halfSize.X
+        and math.abs(localPoint.Y) <= halfSize.Y
+        and math.abs(localPoint.Z) <= halfSize.Z
 end
 
-local function cornersWorldBounds(part)
-    local half = part.Size / 2
+local function inspectPart(part)
+    local halfSize=part.Size / 2
+    local localPoint = part.CFrame:PointToObjectSpace(DEATH)
+    local outside = Vector3.new(
+        math.max(math.abs(localPoint.X) - halfSize.X, 0),
+        math.max(math.abs(localPoint.Y) - halfSize.Y, 0),
+        math.max(math.abs(localPoint.Z) - halfSize.Z, 0)
+    )
     local minimum = Vector3.new(math.huge, math.huge, math.huge)
     local maximum = Vector3.new(-math.huge, -math.huge, -math.huge)
-    for _, sx in ipairs({ -1, 1 }) do
-        for _, sy in ipairs({ -1, 1 }) do
-            for _, sz in ipairs({ -1, 1 }) do
-                local point = part.CFrame:PointToWorldSpace(Vector3.new(half.X * sx, half.Y * sy, half.Z * sz))
+    for _, x in ipairs({ -halfSize.X, halfSize.X }) do
+        for _, y in ipairs({ -halfSize.Y, halfSize.Y }) do
+            for _, z in ipairs({ -halfSize.Z, halfSize.Z }) do
+                local corner = part.CFrame * Vector3.new(x, y, z)
                 minimum = Vector3.new(
-                    math.min(minimum.X, point.X),
-                    math.min(minimum.Y, point.Y),
-                    math.min(minimum.Z, point.Z)
+                    math.min(minimum.X, corner.X),
+                    math.min(minimum.Y, corner.Y),
+                    math.min(minimum.Z, corner.Z)
                 )
                 maximum = Vector3.new(
-                    math.max(maximum.X, point.X),
-                    math.max(maximum.Y, point.Y),
-                    math.max(maximum.Z, point.Z)
+                    math.max(maximum.X, corner.X),
+                    math.max(maximum.Y, corner.Y),
+                    math.max(maximum.Z, corner.Z)
                 )
             end
         end
     end
-    return minimum, maximum
-end
-
-local function inspectPart(part)
-    local base = obbData(part, DEATH)
-    local expanded = obbData(part, DEATH, EXPANSION)
-    local minimum, maximum = cornersWorldBounds(part)
     return {
         part = part,
         path = safeFullName(part),
-        distance = base.distance,
-        localPoint = base.localPoint,
-        half = base.half,
-        margin = base.margin,
-        inside = base.inside,
-        expandedInside = expanded.inside,
-        boundsMin = minimum,
-        boundsMax = maximum,
+        position = part.Position,
+        size = part.Size,
+        frame = part.CFrame,
+        orientation = part.Orientation,
+        half = halfSize,
+        localPoint = localPoint,
+        margin = halfSize - Vector3.new(math.abs(localPoint.X), math.abs(localPoint.Y), math.abs(localPoint.Z)),
+        distance = outside.Magnitude,
+        inside = containsPoint(localPoint, halfSize),
+        expanded = containsPoint(localPoint, halfSize + EXPANSION),
+        minimum = minimum,
+        maximum = maximum,
     }
 end
 
-local function emitPart(target, item, includeDetail)
+local function partDetails(item)
     local part = item.part
-    add(target, "GetFullName(): " .. item.path)
-    add(target, "Name: " .. quote(part.Name))
-    add(target, "ClassName: " .. part.ClassName)
-    add(target, "Position: " .. fmtVector(part.Position))
-    add(target, "Size: " .. fmtVector(part.Size))
-    add(target, "CFrame: " .. fmtCFrame(part.CFrame))
-    add(target, "Orientation: " .. fmtVector(part.Orientation))
-    add(target, "CanCollide: " .. tostring(part.CanCollide))
-    add(target, "CanTouch: " .. tostring(part.CanTouch))
-    add(target, "CanQuery: " .. tostring(part.CanQuery))
-    add(target, "Transparency: " .. fmtNumber(part.Transparency))
-    add(target, "Tags: " .. formatTags(part))
-    add(target, "Attributes: " .. formatAttributes(part))
-    add(target, "Death local/object-space: " .. fmtVector(item.localPoint))
-    add(target, "Half-size: " .. fmtVector(item.half))
-    add(target, "Axis margin: " .. fmtVector(item.margin))
-    add(target, "Inside OBB: " .. tostring(item.inside))
-    add(target, "Inside OBB expanded 3: " .. tostring(item.expandedInside))
-    add(target, "Distance to OBB approx: " .. fmtNumber(item.distance))
-    if includeDetail then
-        add(target, "World corners min: " .. fmtVector(item.boundsMin))
-        add(target, "World corners max: " .. fmtVector(item.boundsMax))
-    end
-    add(target, "")
+    return table.concat({
+        "path:" .. item.path,
+        "Name:" .. quote(part.Name),
+        "Class:" .. part.ClassName,
+        "Position:" .. fmtVector(item.position),
+        "Size:" .. fmtVector(item.size),
+        "CFrame:" .. fmtFrame(item.frame),
+        "Orientation:" .. fmtVector(item.orientation),
+        "CanCollide:" .. tostring(part.CanCollide),
+        "CanTouch:" .. tostring(part.CanTouch),
+        "CanQuery:" .. tostring(part.CanQuery),
+        "Transparency:" .. fmtNumber(part.Transparency),
+        "tags:" .. fmtTags(part),
+        "attributes:" .. fmtAttributes(part),
+    }, " | ")
 end
 
-local function ancestorSummary(instance)
+local function ancestors(instance)
     local names = {}
-    local current = instance
-    local depth = 0
-    while current and depth < 8 do
+    local current = instance.Parent
+    while current and #names < 7 do
         table.insert(names, 1, current.Name .. "<" .. current.ClassName .. ">")
         if current == Workspace then
             break
         end
         current = current.Parent
-        depth = depth + 1
     end
     return table.concat(names, "/")
 end
@@ -254,20 +236,29 @@ for index, item in ipairs(lobbyItems) do
     item.index = index
 end
 
-local boundaryParts = section(5200)
+local boundaryParts = section(5900)
 add(boundaryParts, "Container: " .. (lobbyContainer and safeFullName(lobbyContainer) or "NOT FOUND"))
-add(boundaryParts, "Total BaseParts: " .. tostring(#lobbyItems))
-add(boundaryParts, "")
-for index, item in ipairs(lobbyItems) do
-    if index > MAX_PARTS_REPORTED then
-        add(boundaryParts, "[remaining parts omitted after " .. tostring(MAX_PARTS_REPORTED) .. "]")
-        break
-    end
-    add(boundaryParts, "LOBBY_PART #" .. tostring(index))
-    emitPart(boundaryParts, item, false)
+add(boundaryParts, "BasePart descendants: " .. tostring(#lobbyItems))
+add(boundaryParts, "Sorted by approximate distance from death to OBB; reporting at most " .. tostring(MAX_PARTS_REPORTED))
+for index = 1, math.min(#lobbyItems, MAX_PARTS_REPORTED) do
+    local item = lobbyItems[index]
+    add(boundaryParts, string.format(
+        "#%03d %s | deathLocal:%s | halfSize:%s | insideOBB:%s | axisMargin:%s | distanceOBB:%s | insideExpanded3:%s",
+        item.index,
+        partDetails(item),
+        fmtVector(item.localPoint),
+        fmtVector(item.half),
+        tostring(item.inside),
+        fmtVector(item.margin),
+        fmtNumber(item.distance),
+        tostring(item.expanded)
+    ))
 end
 
-local priorityWords = { "lobbyboundaries", "collisions", "coll", "guard", "boundary", "ground", "bases" }
+local priorityWords = {
+    "lobbyboundaries", "collisions", "coll", "guard", "boundary", "ground", "bases",
+}
+
 local function priority(path)
     local lower = string.lower(path)
     for index, word in ipairs(priorityWords) do
@@ -301,85 +292,148 @@ if overlapOk then
     end)
 end
 
-local overlapSection = section(4300)
-add(overlapSection, "Query center: " .. fmtVector(DEATH))
-add(overlapSection, "Query size: " .. fmtVector(QUERY_SIZE))
-add(overlapSection, "Query status: " .. (overlapOk and "OK" or "FAILED"))
-if not overlapOk then
-    add(overlapSection, "Error: " .. tostring(overlapResult))
-else
-    add(overlapSection, "BaseParts returned: " .. tostring(#overlapItems))
-    for index, item in ipairs(overlapItems) do
-        if index > 50 then
-            add(overlapSection, "[remaining overlap results omitted]")
-            break
-        end
-        add(overlapSection, "OVERLAP #" .. tostring(index))
-        add(overlapSection, "Path: " .. item.path)
-        add(overlapSection, "Position: " .. fmtVector(item.part.Position) .. " | Size: " .. fmtVector(item.part.Size))
-        add(overlapSection, "CanCollide=" .. tostring(item.part.CanCollide) .. " CanTouch=" .. tostring(item.part.CanTouch) .. " Transparency=" .. fmtNumber(item.part.Transparency))
-        add(overlapSection, "Tags: " .. formatTags(item.part))
-        add(overlapSection, "Ancestors: " .. ancestorSummary(item.part))
-        add(overlapSection, "Inside death OBB=" .. tostring(item.inside) .. " expanded3=" .. tostring(item.expandedInside) .. " distance=" .. fmtNumber(item.distance))
-        add(overlapSection, "")
+local overlapSection = section(2400)
+add(overlapSection, "Query center: " .. fmtVector(DEATH) .. " | query box: " .. fmtVector(QUERY_SIZE))
+add(overlapSection, "Query status: " .. (overlapOk and "OK" or ("ERROR " .. clip(overlapResult, 200))))
+add(overlapSection, "BaseParts returned: " .. tostring(#overlapItems))
+for index, item in ipairs(overlapItems) do
+    if not add(overlapSection, string.format(
+        "#%03d priority:%d | %s | ancestors:%s",
+        index,
+        item.priority,
+        partDetails(item),
+        clip(ancestors(item.part), 500)
+    )) then
+        break
     end
 end
 
+local duplicateSection = section(1800)
 local collisions = resolve({ "__OBJECTS", "Build", "1", "COLLISIONS" })
-local runtimeA = Vector3.new(1222.69, 85.56, -631.39)
-local runtimeB = Vector3.new(1579.18, 85.56, -683.86)
-local duplicateMatchesA = {}
-local duplicateMatchesB = {}
+local targetA = Vector3.new(1222.69, 85.56, -631.39)
+local targetB = Vector3.new(1579.18, 85.56, -683.86)
+local matchedA = false
+local matchedB = false
+local duplicateMatches = {}
+
+local function withinTolerance(position, target)
+    return (position - target).Magnitude <= 2
+end
+
 if collisions then
     for _, descendant in ipairs(collisions:GetDescendants()) do
         if descendant:IsA("BasePart") then
-            if (descendant.Position - runtimeA).Magnitude <= 2 then
-                table.insert(duplicateMatchesA, inspectPart(descendant))
-            end
-            if (descendant.Position - runtimeB).Magnitude <= 2 then
-                table.insert(duplicateMatchesB, inspectPart(descendant))
+            local matchesA = withinTolerance(descendant.Position, targetA)
+            local matchesB = withinTolerance(descendant.Position, targetB)
+            if matchesA or matchesB then
+                matchedA = matchedA or matchesA
+                matchedB = matchedB or matchesB
+                table.insert(duplicateMatches, {
+                    item = inspectPart(descendant),
+                    label = (matchesA and "A" or "") .. (matchesB and "B" or ""),
+                })
             end
         end
     end
 end
-
-local duplicateSection = section(3200)
-add(duplicateSection, "COLLISIONS root: " .. (collisions and safeFullName(collisions) or "NOT FOUND"))
-add(duplicateSection, "Runtime target A: " .. fmtVector(runtimeA) .. " | matches: " .. tostring(#duplicateMatchesA))
-for index, item in ipairs(duplicateMatchesA) do
-    add(duplicateSection, "A MATCH #" .. tostring(index))
-    emitPart(duplicateSection, item, true)
-end
-add(duplicateSection, "Runtime target B: " .. fmtVector(runtimeB) .. " | matches: " .. tostring(#duplicateMatchesB))
-for index, item in ipairs(duplicateMatchesB) do
-    add(duplicateSection, "B MATCH #" .. tostring(index))
-    emitPart(duplicateSection, item, true)
-end
-
-local topologySection = section(3000)
-for index, item in ipairs(lobbyItems) do
-    if index > MAX_PARTS_REPORTED then
-        break
-    end
-    add(topologySection, string.format(
-        "#%d %s | worldMin=%s worldMax=%s | deathDistanceOBB=%s expanded3=%s",
+table.sort(duplicateMatches, function(a, b)
+    return a.item.path < b.item.path
+end)
+add(duplicateSection, "Container: " .. (collisions and safeFullName(collisions) or "NOT FOUND"))
+add(duplicateSection, "A target: " .. fmtVector(targetA) .. " | B target: " .. fmtVector(targetB) .. " | position-distance tolerance: 2")
+add(duplicateSection, "Matches: " .. tostring(#duplicateMatches))
+for index, match in ipairs(duplicateMatches) do
+    local item = match.item
+    add(duplicateSection, string.format(
+        "#%03d target:%s | %s | deathLocal:%s | halfSize:%s | insideOBB:%s | axisMargin:%s | distanceOBB:%s | insideExpanded3:%s | worldMin:%s | worldMax:%s",
         index,
-        item.path,
-        fmtVector(item.boundsMin),
-        fmtVector(item.boundsMax),
+        match.label,
+        partDetails(item),
+        fmtVector(item.localPoint),
+        fmtVector(item.half),
+        tostring(item.inside),
+        fmtVector(item.margin),
         fmtNumber(item.distance),
-        tostring(item.expandedInside)
+        tostring(item.expanded),
+        fmtVector(item.minimum),
+        fmtVector(item.maximum)
     ))
 end
 
-local nearSection = section(1800)
+local topologySection = section(2900)
+for index = 1, math.min(#lobbyItems, MAX_PARTS_REPORTED) do
+    local item = lobbyItems[index]
+    add(topologySection, string.format(
+        "#%03d %s | worldCornerMin:%s | worldCornerMax:%s",
+        item.index,
+        item.path,
+        fmtVector(item.minimum),
+        fmtVector(item.maximum)
+    ))
+end
+
+local observedPosition=Vector3.new(556.301758, 85.560913, -512.275024)
+local observed = nil
+local observedDistance = math.huge
+for _, item in ipairs(lobbyItems) do
+    local distance = (item.position - observedPosition).Magnitude
+    if distance < observedDistance then
+        observed = item
+        observedDistance = distance
+    end
+end
+
+local function overlaps(aMin, aMax, bMin, bMax)
+    return aMax >= bMin and bMax >= aMin
+end
+
+local function joinIndices(indices)
+    if #indices == 0 then
+        return "none"
+    end
+    local output = {}
+    for _, index in ipairs(indices) do
+        table.insert(output, string.format("#%03d", index))
+    end
+    return table.concat(output, ",")
+end
+
+if observed then
+    local positiveZ = {}
+    local negativeZ = {}
+    local aboveY = {}
+    for _, item in ipairs(lobbyItems) do
+        if item ~= observed then
+            local xyOverlap = overlaps(item.minimum.X, item.maximum.X, observed.minimum.X, observed.maximum.X)
+                and overlaps(item.minimum.Y, item.maximum.Y, observed.minimum.Y, observed.maximum.Y)
+            local xzOverlap = overlaps(item.minimum.X, item.maximum.X, observed.minimum.X, observed.maximum.X)
+                and overlaps(item.minimum.Z, item.maximum.Z, observed.minimum.Z, observed.maximum.Z)
+            if xyOverlap and item.maximum.Z > observed.maximum.Z then
+                table.insert(positiveZ, item.index)
+            end
+            if xyOverlap and item.minimum.Z < observed.minimum.Z then
+                table.insert(negativeZ, item.index)
+            end
+            if xzOverlap and item.maximum.Y > observed.maximum.Y then
+                table.insert(aboveY, item.index)
+            end
+        end
+    end
+    add(topologySection, "Observed-wall nearest center: #" .. string.format("%03d", observed.index) .. " " .. observed.path)
+    add(topologySection, "Observed center delta: " .. fmtNumber(observedDistance) .. " | worldCornerMin:" .. fmtVector(observed.minimum) .. " | worldCornerMax:" .. fmtVector(observed.maximum))
+    add(topologySection, "Z greater than " .. fmtNumber(observed.maximum.Z) .. "; other boundary AABBs extending beyond with XY overlap: " .. joinIndices(positiveZ))
+    add(topologySection, "Z less than " .. fmtNumber(observed.minimum.Z) .. "; other boundary AABBs extending beyond with XY overlap: " .. joinIndices(negativeZ))
+    add(topologySection, "Y greater than " .. fmtNumber(observed.maximum.Y) .. "; other boundary AABBs extending above with XZ overlap: " .. joinIndices(aboveY))
+else
+    add(topologySection, "Observed wall match: unavailable")
+end
+
+local nearSection = section(800)
 local nearCount = 0
 for _, item in ipairs(lobbyItems) do
-    if item.expandedInside then
+    if item.expanded then
         nearCount = nearCount + 1
-        add(nearSection, "NEAR_DEATH_VOLUME " .. tostring(item.index) .. " " .. item.path)
-        add(nearSection, "  Position=" .. fmtVector(item.part.Position) .. " Size=" .. fmtVector(item.part.Size))
-        add(nearSection, "  local=" .. fmtVector(item.localPoint) .. " margin=" .. fmtVector(item.margin))
+        add(nearSection, string.format("NEAR_DEATH_VOLUME %03d %s", item.index, item.path))
     end
 end
 if nearCount == 0 then
@@ -388,39 +442,35 @@ end
 
 local function globalFunction(name)
     local ok, value = pcall(function()
-        local environment = getfenv()
-        return environment[name]
+        return getfenv()[name]
     end)
-    if ok and type(value) == "function" then
-        return value
-    end
-    return nil
+    return ok and type(value) == "function" and value or nil
 end
 
 local function splitLines(source)
-    local result = {}
+    local lines = {}
     source = source:gsub("\r\n", "\n")
     if source:sub(-1) ~= "\n" then
         source = source .. "\n"
     end
     for line in source:gmatch("(.-)\n") do
-        table.insert(result, line)
+        table.insert(lines, line)
     end
-    return result
+    return lines
 end
 
 local function allOccurrences(source, literal, maximum)
-    local result = {}
-    local start = 1
-    while #result < maximum do
-        local position = string.find(source, literal, start, true)
-        if not position then
+    local positions = {}
+    local startAt = 1
+    while #positions < maximum do
+        local found = string.find(source, literal, startAt, true)
+        if not found then
             break
         end
-        table.insert(result, position)
-        start = position + #literal
+        table.insert(positions, found)
+        startAt = found + math.max(#literal, 1)
     end
-    return result
+    return positions
 end
 
 local function lineAt(source, bytePosition)
@@ -543,9 +593,6 @@ for _, item in ipairs(lobbyItems) do
     anyInside = anyInside or item.inside
 end
 
-local matchedA = #duplicateMatchesA > 0
-local matchedB = #duplicateMatchesB > 0
-
 local summaryLines = {
     "LOBBY_BOUNDARY_PART_COUNT=" .. tostring(#lobbyItems),
     "DEATH_INSIDE_ANY_LOBBY_OBB=" .. tostring(anyInside),
@@ -585,17 +632,20 @@ local reportParts = {
 
 local report = table.concat(reportParts, "\n")
 if #report > MAX_REPORT_BYTES then
-    report = report:sub(1, MAX_REPORT_BYTES - 64) .. "\n[REPORT TRUNCATED TO 24 KB]"
+    local summary = "[SUMMARY]\n" .. table.concat(summaryLines, "\n")
+    report = report:sub(1, math.max(0, MAX_REPORT_BYTES - #summary - 2)) .. "\n\n" .. summary
 end
 
 print(report)
-if type(setclipboard) == "function" then
-    local ok, err = pcall(function()
-        setclipboard(report)
-    end)
+
+local clipboardWriter = globalFunction("setclipboard") or globalFunction("toclipboard")
+if clipboardWriter then
+    local ok, clipboardError = pcall(clipboardWriter, report)
     if not ok then
-        warn("[MemoryTools Lobby Topology Probe] Clipboard copy failed: " .. tostring(err))
+        warn("[MemoryTools Lobby Topology Probe] Clipboard copy failed: " .. clip(clipboardError, 300))
     end
 else
     warn("[MemoryTools Lobby Topology Probe] Clipboard API unavailable; report was printed only")
 end
+
+print("[MemoryTools Lobby Topology Probe] Version " .. VERSION .. " complete")
