@@ -26,27 +26,13 @@ local targets = {
         Path = { "__OBJECTS", "Build", "1", "COLLISIONS", "COLL2", "WALL LEFT", "Part" },
     },
     {
-        Id = "BASES_PART",
+        Id = "BASES",
         Path = { "__OBJECTS", "Build", "MainMap", "Bases", "Part" },
     },
     {
-        Id = "AREAS_GROUND",
+        Id = "GROUND",
         Path = { "__OBJECTS", "Areas", "Ground" },
     },
-}
-
-local nameKeywords = {
-    "Kill",
-    "Death",
-    "Boundary",
-    "Lobby",
-    "Guard",
-    "Collision",
-    "Anti",
-    "Damage",
-    "Void",
-    "Restricted",
-    "Zone",
 }
 
 local searchLiterals = {
@@ -62,12 +48,6 @@ local searchLiterals = {
     "touch",
 }
 
-local targetReferenceLiterals = {
-    "LobbyBoundaries",
-    "COLL GUARD",
-    "WALL LEFT",
-}
-
 local killReferenceLiterals = {
     "Humanoid.Health",
     "Health = 0",
@@ -76,95 +56,91 @@ local killReferenceLiterals = {
     "touch",
 }
 
+local targetReferenceLiterals = {
+    "LobbyBoundaries",
+    "COLL GUARD",
+    "WALL LEFT",
+    "Bases",
+    "Ground",
+}
+
+local noteworthyAncestorWords = {
+    "kill",
+    "death",
+    "boundary",
+    "lobby",
+    "guard",
+    "collision",
+    "anti",
+    "damage",
+    "void",
+    "restricted",
+    "zone",
+}
+
 local function clip(value, maximum)
-    value = tostring(value)
-    if #value <= maximum then
-        return value
+    local text = tostring(value)
+    if #text <= maximum then
+        return text
     end
-    return value:sub(1, math.max(0, maximum - 3)) .. "..."
+    return text:sub(1, math.max(0, maximum - 3)) .. "..."
 end
 
 local function quote(value)
-    return string.format("%q", tostring(value))
+    return string.format("%q", clip(value, 600))
 end
 
-local function fmtNumber(value)
-    if typeof(value) ~= "number" then
-        return "?"
-    end
-    return string.format("%.3f", value)
+local function formatNumber(value)
+    return string.format("%.6f", value)
 end
 
-local function fmtVector(value)
-    if typeof(value) ~= "Vector3" then
-        return "(?, ?, ?)"
-    end
-    return string.format("(%.3f, %.3f, %.3f)", value.X, value.Y, value.Z)
+local function formatVector(value)
+    return string.format("(%.6f, %.6f, %.6f)", value.X, value.Y, value.Z)
 end
 
-local function fmtCFrame(value)
-    if typeof(value) ~= "CFrame" then
-        return "?"
-    end
-    local components = { value:GetComponents() }
-    for index, component in ipairs(components) do
-        components[index] = string.format("%.5f", component)
-    end
-    return "CFrame.new(" .. table.concat(components, ", ") .. ")"
-end
-
-local function fullName(instance)
-    local ok, result = pcall(function()
-        return instance:GetFullName()
-    end)
-    return ok and clip(result, 260) or clip(instance, 260)
-end
-
-local function resolvePath(path)
-    local current = Workspace
-    for _, name in ipairs(path) do
-        current = current:FindFirstChild(name)
-        if not current then
-            return nil
-        end
-    end
-    return current
-end
-
-local function valueString(value)
-    local valueType = typeof(value)
-    if valueType == "string" then
+local function formatValue(value)
+    local kind = typeof(value)
+    if kind == "string" then
         return quote(value)
-    elseif valueType == "Vector3" then
-        return fmtVector(value)
-    elseif valueType == "CFrame" then
-        return fmtCFrame(value)
-    elseif valueType == "Color3" then
-        return string.format("Color3(%.3f, %.3f, %.3f)", value.R, value.G, value.B)
+    elseif kind == "number" then
+        return formatNumber(value)
+    elseif kind == "Vector3" then
+        return formatVector(value)
+    elseif kind == "CFrame" then
+        return clip(tostring(value), 600)
+    elseif kind == "Color3" then
+        return string.format("(%.6f, %.6f, %.6f)", value.R, value.G, value.B)
+    elseif kind == "Instance" then
+        local ok, fullName = pcall(function()
+            return value:GetFullName()
+        end)
+        return ok and clip(fullName, 600) or clip(value, 600)
     end
-    return clip(tostring(value), 240)
+    return clip(tostring(value), 600)
+end
+
+local function sortedKeys(dictionary)
+    local keys = {}
+    for key in pairs(dictionary) do
+        table.insert(keys, tostring(key))
+    end
+    table.sort(keys)
+    return keys
 end
 
 local function formatAttributes(instance)
     local ok, attributes = pcall(function()
         return instance:GetAttributes()
     end)
-    if not ok or type(attributes) ~= "table" then
-        return "<unavailable>"
+    if not ok then
+        return "<error: " .. clip(attributes, 200) .. ">"
     end
-    local names = {}
-    for name in pairs(attributes) do
-        table.insert(names, name)
+
+    local pieces = {}
+    for _, key in ipairs(sortedKeys(attributes)) do
+        table.insert(pieces, quote(key) .. ": " .. formatValue(attributes[key]))
     end
-    table.sort(names)
-    if #names == 0 then
-        return "{}"
-    end
-    local parts = {}
-    for _, name in ipairs(names) do
-        table.insert(parts, name .. "=" .. valueString(attributes[name]))
-    end
-    return "{" .. table.concat(parts, ", ") .. "}"
+    return "{" .. table.concat(pieces, ", ") .. "}"
 end
 
 local function formatTags(instance)
@@ -172,124 +148,167 @@ local function formatTags(instance)
         return CollectionService:GetTags(instance)
     end)
     if not ok then
-        return "<unavailable>"
+        return "<error: " .. clip(tags, 200) .. ">"
     end
+
     table.sort(tags)
-    return #tags > 0 and table.concat(tags, ", ") or "none"
+    local pieces = {}
+    for _, tag in ipairs(tags) do
+        table.insert(pieces, quote(tag))
+    end
+    return "{" .. table.concat(pieces, ", ") .. "}"
 end
 
-local sections = {}
-local function newSection()
+local function fullName(instance)
+    local ok, result = pcall(function()
+        return instance:GetFullName()
+    end)
+    return ok and clip(result, 800) or "<unavailable>"
+end
+
+local function pathText(path)
+    return "Workspace." .. table.concat(path, ".")
+end
+
+local function resolve(path)
+    local current = Workspace
+    for _, childName in ipairs(path) do
+        current = current:FindFirstChild(childName)
+        if not current then
+            return nil
+        end
+    end
+    return current
+end
+
+local function newSection(limit)
     return {
         Lines = {},
         Bytes = 0,
+        Limit = limit,
+        Truncated = false,
     }
 end
 
-local geometry = newSection()
-local deathTests = newSection()
-local ancestors = newSection()
-local references = newSection()
-
 local function addLine(section, line)
-    line = tostring(line)
-    if section.Bytes + #line + 1 > 8 * 1024 then
+    if section.Truncated then
         return false
     end
+
+    line = tostring(line)
+    local addedBytes = #line + 1
+    local marker = "[SECTION TRUNCATED TO PRESERVE 20 KB REPORT LIMIT]"
+    if section.Bytes + addedBytes > section.Limit then
+        if section.Bytes + #marker + 1 <= section.Limit then
+            table.insert(section.Lines, marker)
+            section.Bytes = section.Bytes + #marker + 1
+        end
+        section.Truncated = true
+        return false
+    end
+
     table.insert(section.Lines, line)
-    section.Bytes = section.Bytes + #line + 1
+    section.Bytes = section.Bytes + addedBytes
     return true
 end
 
-local resolvedTargets = {}
+local geometry = newSection(5200)
+local deathTests = newSection(3600)
+local ancestors = newSection(5000)
+local references = newSection(4400)
 local insideResults = {}
 
 for _, target in ipairs(targets) do
-    local instance = resolvePath(target.Path)
-    resolvedTargets[target.Id] = instance
+    local instance = resolve(target.Path)
 
-    addLine(geometry, target.Id .. ":")
+    addLine(geometry, "TARGET " .. target.Id)
+    addLine(geometry, "Requested path: " .. pathText(target.Path))
+
     if not instance then
-        addLine(geometry, "  Status: NOT FOUND")
+        addLine(geometry, "Status: NOT FOUND")
         addLine(geometry, "")
-    elseif not instance:IsA("BasePart") then
-        addLine(geometry, "  Status: FOUND BUT NOT BASEPART")
-        addLine(geometry, "  FullName: " .. fullName(instance))
-        addLine(geometry, "  ClassName: " .. instance.ClassName)
-        addLine(geometry, "")
-    else
-        addLine(geometry, "  Status: FOUND")
-        addLine(geometry, "  FullName: " .. fullName(instance))
-        addLine(geometry, "  ClassName: " .. instance.ClassName)
-        addLine(geometry, "  Position: " .. fmtVector(instance.Position))
-        addLine(geometry, "  Size: " .. fmtVector(instance.Size))
-        addLine(geometry, "  CFrame: " .. fmtCFrame(instance.CFrame))
-        addLine(geometry, "  Orientation: " .. fmtVector(instance.Orientation))
-        addLine(geometry, "  CanCollide: " .. tostring(instance.CanCollide))
-        addLine(geometry, "  CanTouch: " .. tostring(instance.CanTouch))
-        addLine(geometry, "  CanQuery: " .. tostring(instance.CanQuery))
-        addLine(geometry, "  Transparency: " .. fmtNumber(instance.Transparency))
-        addLine(geometry, "  CollisionGroup: " .. tostring(instance.CollisionGroup))
-        addLine(geometry, "  Anchored: " .. tostring(instance.Anchored))
-        addLine(geometry, "  Massless: " .. tostring(instance.Massless))
-        local shapeOk, shape = pcall(function()
-            return instance.Shape
-        end)
-        addLine(geometry, "  Shape: " .. (shapeOk and tostring(shape) or "N/A"))
-        addLine(geometry, "  Attributes: " .. formatAttributes(instance))
-        addLine(geometry, "  Tags: " .. formatTags(instance))
-        local half = instance.Size / 2
-        addLine(geometry, "  ApproxAABB.Min: " .. fmtVector(instance.Position - half))
-        addLine(geometry, "  ApproxAABB.Max: " .. fmtVector(instance.Position + half))
-        addLine(geometry, "")
-    end
-end
-
-for _, target in ipairs(targets) do
-    local instance = resolvedTargets[target.Id]
-    addLine(deathTests, target.Id .. ":")
-    if not instance or not instance:IsA("BasePart") then
-        addLine(deathTests, "  Test: unavailable")
         insideResults[target.Id] = false
-    else
-        local localPos = instance.CFrame:PointToObjectSpace(death)
-        local halfSize = instance.Size / 2
-        local absolute = Vector3.new(math.abs(localPos.X), math.abs(localPos.Y), math.abs(localPos.Z))
-        local margin = halfSize - absolute
-        local inside = absolute.X <= halfSize.X
-            and absolute.Y <= halfSize.Y
-            and absolute.Z <= halfSize.Z
-        insideResults[target.Id] = inside
-        addLine(deathTests, "  Distance death->Position: " .. fmtNumber((death - instance.Position).Magnitude))
-        addLine(deathTests, "  Death local/object-space: " .. fmtVector(localPos))
-        addLine(deathTests, "  HalfSize: " .. fmtVector(halfSize))
-        addLine(deathTests, "  Axis margin (HalfSize-AbsLocal): " .. fmtVector(margin))
-        addLine(deathTests, "  insideOBB: " .. tostring(inside))
-    end
-    addLine(deathTests, "")
-end
-
-local lowerKeywords = {}
-for _, keyword in ipairs(nameKeywords) do
-    table.insert(lowerKeywords, string.lower(keyword))
-end
-
-for _, target in ipairs(targets) do
-    local current = resolvedTargets[target.Id]
-    addLine(ancestors, target.Id .. ":")
-    if not current then
-        addLine(ancestors, "  NOT FOUND")
+        addLine(deathTests, "TARGET " .. target.Id .. ": NOT FOUND")
+        addLine(deathTests, "")
+        addLine(ancestors, "TARGET " .. target.Id .. ": NOT FOUND")
         addLine(ancestors, "")
+        continue
     end
+
+    addLine(geometry, "GetFullName(): " .. fullName(instance))
+    addLine(geometry, "ClassName: " .. instance.ClassName)
+
+    if not instance:IsA("BasePart") then
+        addLine(geometry, "Status: FOUND, NOT A BasePart")
+        addLine(geometry, "GetAttributes(): " .. formatAttributes(instance))
+        addLine(geometry, "CollectionService:GetTags(part): " .. formatTags(instance))
+        addLine(geometry, "")
+        insideResults[target.Id] = false
+        addLine(deathTests, "TARGET " .. target.Id .. ": FOUND, NOT A BasePart")
+        addLine(deathTests, "")
+    else
+        local position = instance.Position
+        local size = instance.Size
+        local frame = instance.CFrame
+        local halfExtents = size / 2
+        local approximateMinimum = position - halfExtents
+        local approximateMaximum = position + halfExtents
+        local objectPoint = frame:PointToObjectSpace(death)
+        local margin = halfExtents - Vector3.new(
+            math.abs(objectPoint.X),
+            math.abs(objectPoint.Y),
+            math.abs(objectPoint.Z)
+        )
+        local isInside = math.abs(objectPoint.X) <= halfExtents.X
+            and math.abs(objectPoint.Y) <= halfExtents.Y
+            and math.abs(objectPoint.Z) <= halfExtents.Z
+
+        insideResults[target.Id] = isInside
+
+        addLine(geometry, "Position: " .. formatVector(position))
+        addLine(geometry, "Size: " .. formatVector(size))
+        addLine(geometry, "CFrame: " .. tostring(frame))
+        addLine(geometry, "Orientation: " .. formatVector(instance.Orientation))
+        addLine(geometry, "CanCollide: " .. tostring(instance.CanCollide))
+        addLine(geometry, "CanTouch: " .. tostring(instance.CanTouch))
+        addLine(geometry, "CanQuery: " .. tostring(instance.CanQuery))
+        addLine(geometry, "Transparency: " .. formatNumber(instance.Transparency))
+        addLine(geometry, "CollisionGroup: " .. instance.CollisionGroup)
+        addLine(geometry, "Anchored: " .. tostring(instance.Anchored))
+        addLine(geometry, "Massless: " .. tostring(instance.Massless))
+        if instance:IsA("Part") then
+            addLine(geometry, "Shape: " .. tostring(instance.Shape))
+        else
+            addLine(geometry, "Shape: N/A for " .. instance.ClassName)
+        end
+        addLine(geometry, "GetAttributes(): " .. formatAttributes(instance))
+        addLine(geometry, "CollectionService:GetTags(part): " .. formatTags(instance))
+        addLine(geometry, "Approximate AABB min: " .. formatVector(approximateMinimum))
+        addLine(geometry, "Approximate AABB max: " .. formatVector(approximateMaximum))
+        addLine(geometry, "")
+
+        addLine(deathTests, "TARGET " .. target.Id)
+        addLine(deathTests, "Death world point: " .. formatVector(death))
+        addLine(deathTests, "Distance to part center: " .. formatNumber((death - position).Magnitude))
+        addLine(deathTests, "Death in object-space: " .. formatVector(objectPoint))
+        addLine(deathTests, "Half-size: " .. formatVector(halfExtents))
+        addLine(deathTests, "Inside OBB: " .. tostring(isInside))
+        addLine(deathTests, "Axis margin (half-size minus absolute local point): " .. formatVector(margin))
+        addLine(deathTests, "")
+    end
+
+    addLine(ancestors, "TARGET " .. target.Id)
+    local current = instance
     while current do
         local lowerName = string.lower(current.Name)
         local keywordHits = {}
-        for index, lowerKeyword in ipairs(lowerKeywords) do
-            if string.find(lowerName, lowerKeyword, 1, true) then
-                table.insert(keywordHits, nameKeywords[index])
+        for _, word in ipairs(noteworthyAncestorWords) do
+            if string.find(lowerName, word, 1, true) then
+                table.insert(keywordHits, word)
             end
         end
-        addLine(ancestors, "- " .. fullName(current))
+
+        addLine(ancestors, "- Name: " .. quote(current.Name))
         addLine(ancestors, "  ClassName: " .. current.ClassName)
         addLine(ancestors, "  Attributes: " .. formatAttributes(current))
         addLine(ancestors, "  Tags: " .. formatTags(current))
